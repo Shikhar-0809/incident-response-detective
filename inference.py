@@ -26,7 +26,8 @@ import json
 
 API_BASE_URL = os.environ.get("API_BASE_URL", "https://api.openai.com/v1")
 MODEL_NAME = os.environ.get("MODEL_NAME", "gpt-4o-mini")
-HF_TOKEN = os.environ.get("HF_TOKEN", "")
+# Validator injects API_KEY, hackathon docs say HF_TOKEN — check both
+API_KEY = os.environ.get("API_KEY", "") or os.environ.get("HF_TOKEN", "")
 ENV_BASE_URL = os.environ.get("ENV_BASE_URL", "")
 TASK_IDS = os.environ.get("TASK_IDS", "task_easy,task_medium,task_hard").split(",")
 MAX_AGENT_STEPS = int(os.environ.get("MAX_AGENT_STEPS", "3"))
@@ -105,7 +106,7 @@ def call_llm(observation: dict) -> dict:
     try:
         from openai import OpenAI
 
-        client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
+        client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
         user_prompt = build_user_prompt(observation)
 
@@ -120,21 +121,60 @@ def call_llm(observation: dict) -> dict:
         )
         text = response.choices[0].message.content.strip()
 
-        # Parse JSON from response (handle markdown code blocks)
-        if text.startswith("```"):
-            text = text.split("```")[1]
-            if text.startswith("json"):
-                text = text[4:]
-            text = text.strip()
+        # Robust JSON extraction — handle code blocks, preamble, etc.
+        action, reasoning = parse_llm_response(text)
+        return {"action": action, "reasoning": reasoning}
 
-        result = json.loads(text)
-        return {
-            "action": result.get("action", "notify_cto"),
-            "reasoning": result.get("reasoning", ""),
-        }
-    except Exception:
-        # Any failure (import, auth, network, parsing) → deterministic fallback
+    except Exception as e:
+        # Any failure → deterministic fallback
         return deterministic_fallback(observation)
+
+
+def parse_llm_response(text: str) -> tuple:
+    """Robustly extract action + reasoning from LLM text. Returns (action, reasoning)."""
+    from task_definitions import ACTIONS
+
+    # Try 1: Direct JSON parse
+    try:
+        result = json.loads(text)
+        action = result.get("action", "")
+        if action in ACTIONS:
+            return action, result.get("reasoning", "")
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    # Try 2: Extract JSON from markdown code blocks
+    if "```" in text:
+        try:
+            block = text.split("```")[1]
+            if block.startswith("json"):
+                block = block[4:]
+            result = json.loads(block.strip())
+            action = result.get("action", "")
+            if action in ACTIONS:
+                return action, result.get("reasoning", "")
+        except (json.JSONDecodeError, TypeError, IndexError):
+            pass
+
+    # Try 3: Find JSON object anywhere in the text
+    try:
+        start = text.index("{")
+        end = text.rindex("}") + 1
+        result = json.loads(text[start:end])
+        action = result.get("action", "")
+        if action in ACTIONS:
+            return action, result.get("reasoning", "")
+    except (ValueError, json.JSONDecodeError, TypeError):
+        pass
+
+    # Try 4: Keyword scan — find any valid action mentioned in the text
+    text_lower = text.lower()
+    for action in ACTIONS:
+        if action in text_lower:
+            return action, text
+
+    # Give up — return notify_cto
+    return "notify_cto", text
 
 
 def deterministic_fallback(observation: dict) -> dict:
@@ -195,12 +235,9 @@ def run_task(env, env_mode: str, task_id: str) -> dict:
         if observation.get("done", False):
             break
 
-        # Always try LLM first, fall back to deterministic
+        # Always attempt LLM call first; fall back to deterministic on failure
         try:
-            if HF_TOKEN:
-                agent_result = call_llm(observation)
-            else:
-                agent_result = deterministic_fallback(observation)
+            agent_result = call_llm(observation)
         except Exception:
             agent_result = deterministic_fallback(observation)
 
