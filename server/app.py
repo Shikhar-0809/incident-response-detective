@@ -47,9 +47,10 @@ def get_tasks():
 
 
 @app.post("/reset")
-def reset(req: ResetRequest):
+def reset(req: Optional[ResetRequest] = None):
+    task_id = req.task_id if req else "task_easy"
     try:
-        episode_id, observation = env.reset(task_id=req.task_id)
+        episode_id, observation = env.reset(task_id=task_id)
         return {"episode_id": episode_id, "observation": observation}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
