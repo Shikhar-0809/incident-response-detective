@@ -24,9 +24,9 @@ import json
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-API_BASE_URL = os.environ.get("API_BASE_URL", "https://api.openai.com/v1")
+# Read exactly the env vars the validator injects
+API_BASE_URL = os.environ.get("API_BASE_URL", "")
 MODEL_NAME = os.environ.get("MODEL_NAME", "gpt-4o-mini")
-# Validator injects API_KEY, hackathon docs say HF_TOKEN — check both
 API_KEY = os.environ.get("API_KEY", "") or os.environ.get("HF_TOKEN", "")
 ENV_BASE_URL = os.environ.get("ENV_BASE_URL", "")
 TASK_IDS = os.environ.get("TASK_IDS", "task_easy,task_medium,task_hard").split(",")
@@ -102,32 +102,32 @@ Respond with JSON only: {{"action": "...", "reasoning": "..."}}"""
 
 
 def call_llm(observation: dict) -> dict:
-    """Call the LLM via OpenAI-compatible client. Returns {action, reasoning}."""
-    try:
-        from openai import OpenAI
+    """Call the LLM via OpenAI-compatible client. Returns {action, reasoning}.
+    Raises on failure so the caller can decide whether to fallback."""
+    from openai import OpenAI
 
-        client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+    # Debug: log what we're connecting to (goes to stderr, not parsed by evaluator)
+    print(f"# LLM: base_url={API_BASE_URL} model={MODEL_NAME} key={'set' if API_KEY else 'EMPTY'}", file=sys.stderr)
 
-        user_prompt = build_user_prompt(observation)
+    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
-        response = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.0,
-            max_tokens=512,
-        )
-        text = response.choices[0].message.content.strip()
+    user_prompt = build_user_prompt(observation)
 
-        # Robust JSON extraction — handle code blocks, preamble, etc.
-        action, reasoning = parse_llm_response(text)
-        return {"action": action, "reasoning": reasoning}
+    response = client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ],
+        temperature=0.0,
+        max_tokens=512,
+    )
+    text = response.choices[0].message.content.strip()
+    print(f"# LLM response: {text[:200]}", file=sys.stderr)
 
-    except Exception as e:
-        # Any failure → deterministic fallback
-        return deterministic_fallback(observation)
+    # Robust JSON extraction
+    action, reasoning = parse_llm_response(text)
+    return {"action": action, "reasoning": reasoning}
 
 
 def parse_llm_response(text: str) -> tuple:
@@ -238,7 +238,8 @@ def run_task(env, env_mode: str, task_id: str) -> dict:
         # Always attempt LLM call first; fall back to deterministic on failure
         try:
             agent_result = call_llm(observation)
-        except Exception:
+        except Exception as e:
+            print(f"# LLM call failed: {type(e).__name__}: {e}", file=sys.stderr)
             agent_result = deterministic_fallback(observation)
 
         action_str = agent_result.get("action", "notify_cto")
