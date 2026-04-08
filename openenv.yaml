@@ -1,0 +1,13 @@
+name: incident_response_detective
+version: "1.0.0"
+description: >
+  RL environment for incident triage. An agent must analyze system logs, Slack chat,
+  and runbook procedures to select the safest remediation action under conflicting signals.
+  Three difficulty tiers: easy (direct instruction), medium (conflicting evidence),
+  hard (root-cause analysis in a cascading failure with misleading chat).
+spec_version: 1
+type: step_reset
+runtime:
+  sdk: docker
+app:
+  port: 7860
