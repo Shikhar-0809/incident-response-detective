@@ -102,13 +102,13 @@ Respond with JSON only: {{"action": "...", "reasoning": "..."}}"""
 
 def call_llm(observation: dict) -> dict:
     """Call the LLM via OpenAI-compatible client. Returns {action, reasoning}."""
-    from openai import OpenAI
-
-    client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
-
-    user_prompt = build_user_prompt(observation)
-
     try:
+        from openai import OpenAI
+
+        client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
+
+        user_prompt = build_user_prompt(observation)
+
         response = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[
@@ -132,8 +132,8 @@ def call_llm(observation: dict) -> dict:
             "action": result.get("action", "notify_cto"),
             "reasoning": result.get("reasoning", ""),
         }
-    except Exception as e:
-        # Fallback: deterministic policy if LLM fails
+    except Exception:
+        # Any failure (import, auth, network, parsing) → deterministic fallback
         return deterministic_fallback(observation)
 
 
@@ -180,11 +180,13 @@ def run_task(env, env_mode: str, task_id: str) -> dict:
 
     print(f"[START] task={task_id} env={BENCHMARK_NAME} model={MODEL_NAME}")
 
-    # Reset
-    if env_mode == "http":
+    try:
+        # Reset
         episode_id, observation = env.reset(task_id=task_id)
-    else:
-        episode_id, observation = env.reset(task_id=task_id)
+    except Exception as e:
+        print(f"[STEP] step=1 action={{}} reward=0.00 done=true error={str(e)}")
+        print(f"[END] success=false steps=0 score=0.000 rewards=")
+        return {"task_id": task_id, "success": False, "steps": 0, "score": 0.0, "rewards": []}
 
     rewards = []
     last_score = 0.0
@@ -193,20 +195,30 @@ def run_task(env, env_mode: str, task_id: str) -> dict:
         if observation.get("done", False):
             break
 
-        # Call LLM (or fallback)
-        if HF_TOKEN:
-            agent_result = call_llm(observation)
-        else:
+        # Always try LLM first, fall back to deterministic
+        try:
+            if HF_TOKEN:
+                agent_result = call_llm(observation)
+            else:
+                agent_result = deterministic_fallback(observation)
+        except Exception:
             agent_result = deterministic_fallback(observation)
 
-        action_str = agent_result["action"]
-        action_dict = {"action": action_str, "reasoning": agent_result.get("reasoning", "")}
+        action_str = agent_result.get("action", "notify_cto")
+        reasoning = agent_result.get("reasoning", "")
+        action_dict = {"action": action_str, "reasoning": reasoning}
 
         # Step
-        if env_mode == "http":
-            observation = env.step(episode_id, action_str, agent_result.get("reasoning", ""))
-        else:
-            observation = env.step(episode_id, action_dict)
+        try:
+            if env_mode == "http":
+                observation = env.step(episode_id, action_str, reasoning)
+            else:
+                observation = env.step(episode_id, action_dict)
+        except Exception as e:
+            action_json = json.dumps(action_dict)
+            print(f"[STEP] step={step_num} action={action_json} reward=0.00 done=true error={str(e)}")
+            print(f"[END] success=false steps={step_num} score=0.000 rewards={','.join(f'{r:.2f}' for r in rewards)}")
+            return {"task_id": task_id, "success": False, "steps": step_num, "score": 0.0, "rewards": rewards}
 
         reward = observation.get("last_reward", 0.0)
         done = observation.get("done", False)
@@ -222,12 +234,12 @@ def run_task(env, env_mode: str, task_id: str) -> dict:
             break
 
     # Grade
-    if env_mode == "http":
+    try:
         grade_result = env.grade(episode_id)
-    else:
-        grade_result = env.grade(episode_id)
+        final_score = grade_result.get("score", last_score)
+    except Exception:
+        final_score = last_score
 
-    final_score = grade_result.get("score", last_score)
     success = final_score >= SUCCESS_SCORE_THRESHOLD
     total_steps = len(rewards)
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
@@ -244,7 +256,12 @@ def run_task(env, env_mode: str, task_id: str) -> dict:
 
 
 def main():
-    env, env_mode = get_env()
+    try:
+        env, env_mode = get_env()
+    except Exception:
+        # Last resort: embedded env
+        from server.environment import IncidentResponseEnvironment
+        env, env_mode = IncidentResponseEnvironment(), "embedded"
 
     results = []
     for task_id in TASK_IDS:
