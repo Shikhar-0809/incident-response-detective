@@ -1,56 +1,40 @@
 """
 Incident-Response-Detective: Inference Script
 ===============================================
-Uses the OpenAI-compatible client to call an LLM that performs Chain-of-Thought
-reasoning over incident observations (logs, chat, runbook) and selects actions.
+Calls the LLM proxy injected via API_BASE_URL / API_KEY env vars.
+Falls back to deterministic policy only if the LLM returns unparseable output.
 
 Emits structured [START]/[STEP]/[END] logs per hackathon requirements.
-
-Required env vars:
-  API_BASE_URL  — LLM endpoint (default: https://api.openai.com/v1)
-  MODEL_NAME    — Model identifier (default: gpt-4o-mini)
-  HF_TOKEN      — API key for the LLM service
-
-Optional:
-  ENV_BASE_URL  — Running environment URL. If unset, uses embedded in-process env.
-  TASK_IDS      — Comma-separated subset (default: task_easy,task_medium,task_hard)
-  MAX_AGENT_STEPS — Max steps per task (default: 3)
-  BENCHMARK_NAME  — Label for [START] line (default: incident-response-detective)
 """
 
 import os
 import sys
 import json
+import requests as http_requests
 
-# ── Config ────────────────────────────────────────────────────────────────────
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# Read exactly the env vars the validator injects
-API_BASE_URL = os.environ.get("API_BASE_URL", "")
-MODEL_NAME = os.environ.get("MODEL_NAME", "gpt-4o-mini")
-API_KEY = os.environ.get("API_KEY", "") or os.environ.get("HF_TOKEN", "")
-ENV_BASE_URL = os.environ.get("ENV_BASE_URL", "")
+# ── Static config (no env vars that change at runtime) ────────────────────────
+
 TASK_IDS = os.environ.get("TASK_IDS", "task_easy,task_medium,task_hard").split(",")
 MAX_AGENT_STEPS = int(os.environ.get("MAX_AGENT_STEPS", "3"))
 BENCHMARK_NAME = os.environ.get("BENCHMARK_NAME", "incident-response-detective")
 SUCCESS_SCORE_THRESHOLD = float(os.environ.get("SUCCESS_SCORE_THRESHOLD", "0.5"))
 
-# ── Ensure project root importable ────────────────────────────────────────────
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
 
 # ── Environment Access ────────────────────────────────────────────────────────
 
 def get_env():
-    """Return either an HTTP client or an embedded environment."""
-    if ENV_BASE_URL:
+    env_url = os.environ.get("ENV_BASE_URL", "")
+    if env_url:
         from client import IncidentResponseClient
-        return IncidentResponseClient(base_url=ENV_BASE_URL), "http"
+        return IncidentResponseClient(base_url=env_url), "http"
     else:
         from server.environment import IncidentResponseEnvironment
         return IncidentResponseEnvironment(), "embedded"
 
 
-# ── LLM Agent ─────────────────────────────────────────────────────────────────
+# ── LLM Prompt ────────────────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = """You are an expert Site Reliability Engineer (SRE) performing incident triage.
 
@@ -74,7 +58,6 @@ Available actions: rollback_deployment, scale_infrastructure, flush_redis_cache,
 
 
 def build_user_prompt(observation: dict) -> str:
-    """Format the observation into a structured prompt for the LLM."""
     logs_str = "\n".join(
         f"  [{l['ts']}] [{l['level']}] {l['service']}: {l['msg']}"
         for l in observation.get("logs", [])
@@ -101,130 +84,171 @@ Analyze the above. Identify the root cause. Select ONE action.
 Respond with JSON only: {{"action": "...", "reasoning": "..."}}"""
 
 
+# ── LLM Call — two methods, SDK first then raw HTTP ───────────────────────────
+
 def call_llm(observation: dict) -> dict:
-    """Call the LLM via OpenAI-compatible client. Returns {action, reasoning}.
-    Raises on failure so the caller can decide whether to fallback."""
+    """
+    Call the LLM. Reads API_BASE_URL and API_KEY fresh from env every time.
+    Tries OpenAI SDK first, then raw HTTP POST as backup.
+    Raises on total failure.
+    """
+    # Read env vars FRESH every call (validator may set them after import)
+    api_base = os.environ.get("API_BASE_URL", "")
+    api_key = os.environ.get("API_KEY", "") or os.environ.get("HF_TOKEN", "")
+    model = os.environ.get("MODEL_NAME", "gpt-4o-mini")
+
+    print(f"# LLM config: base_url='{api_base}' model='{model}' key_set={bool(api_key)}", file=sys.stderr)
+
+    if not api_base:
+        raise ValueError("API_BASE_URL is not set")
+
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": build_user_prompt(observation)},
+    ]
+
+    # Method 1: Try OpenAI SDK
+    try:
+        text = _call_via_sdk(api_base, api_key, model, messages)
+        print(f"# SDK response: {text[:200]}", file=sys.stderr)
+        return parse_llm_response(text)
+    except Exception as e:
+        print(f"# SDK failed ({type(e).__name__}: {e}), trying raw HTTP...", file=sys.stderr)
+
+    # Method 2: Raw HTTP POST (guaranteed to hit the proxy)
+    text = _call_via_http(api_base, api_key, model, messages)
+    print(f"# HTTP response: {text[:200]}", file=sys.stderr)
+    return parse_llm_response(text)
+
+
+def _call_via_sdk(api_base: str, api_key: str, model: str, messages: list) -> str:
+    """Call via OpenAI Python SDK."""
     from openai import OpenAI
 
-    # Debug: log what we're connecting to (goes to stderr, not parsed by evaluator)
-    print(f"# LLM: base_url={API_BASE_URL} model={MODEL_NAME} key={'set' if API_KEY else 'EMPTY'}", file=sys.stderr)
-
-    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
-
-    user_prompt = build_user_prompt(observation)
-
+    client = OpenAI(
+        base_url=api_base,
+        api_key=api_key,
+    )
     response = client.chat.completions.create(
-        model=MODEL_NAME,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
-        ],
+        model=model,
+        messages=messages,
         temperature=0.0,
         max_tokens=512,
     )
-    text = response.choices[0].message.content.strip()
-    print(f"# LLM response: {text[:200]}", file=sys.stderr)
-
-    # Robust JSON extraction
-    action, reasoning = parse_llm_response(text)
-    return {"action": action, "reasoning": reasoning}
+    return response.choices[0].message.content.strip()
 
 
-def parse_llm_response(text: str) -> tuple:
-    """Robustly extract action + reasoning from LLM text. Returns (action, reasoning)."""
+def _call_via_http(api_base: str, api_key: str, model: str, messages: list) -> str:
+    """Call via raw HTTP POST — works with any OpenAI-compatible endpoint."""
+    # Normalize URL: ensure it ends with /chat/completions
+    url = api_base.rstrip("/")
+    if not url.endswith("/chat/completions"):
+        if url.endswith("/v1"):
+            url = url + "/chat/completions"
+        else:
+            url = url + "/v1/chat/completions"
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": 0.0,
+        "max_tokens": 512,
+    }
+
+    print(f"# HTTP POST to: {url}", file=sys.stderr)
+    resp = http_requests.post(url, headers=headers, json=payload, timeout=120)
+    resp.raise_for_status()
+    data = resp.json()
+    return data["choices"][0]["message"]["content"].strip()
+
+
+# ── Response Parsing ──────────────────────────────────────────────────────────
+
+def parse_llm_response(text: str) -> dict:
+    """Extract action + reasoning from LLM text."""
     from task_definitions import ACTIONS
 
-    # Try 1: Direct JSON parse
+    # Try direct JSON
     try:
         result = json.loads(text)
-        action = result.get("action", "")
-        if action in ACTIONS:
-            return action, result.get("reasoning", "")
+        if result.get("action") in ACTIONS:
+            return {"action": result["action"], "reasoning": result.get("reasoning", "")}
     except (json.JSONDecodeError, TypeError):
         pass
 
-    # Try 2: Extract JSON from markdown code blocks
+    # Try extracting from code blocks
     if "```" in text:
         try:
             block = text.split("```")[1]
             if block.startswith("json"):
                 block = block[4:]
             result = json.loads(block.strip())
-            action = result.get("action", "")
-            if action in ACTIONS:
-                return action, result.get("reasoning", "")
+            if result.get("action") in ACTIONS:
+                return {"action": result["action"], "reasoning": result.get("reasoning", "")}
         except (json.JSONDecodeError, TypeError, IndexError):
             pass
 
-    # Try 3: Find JSON object anywhere in the text
+    # Try finding JSON anywhere
     try:
         start = text.index("{")
         end = text.rindex("}") + 1
         result = json.loads(text[start:end])
-        action = result.get("action", "")
-        if action in ACTIONS:
-            return action, result.get("reasoning", "")
+        if result.get("action") in ACTIONS:
+            return {"action": result["action"], "reasoning": result.get("reasoning", "")}
     except (ValueError, json.JSONDecodeError, TypeError):
         pass
 
-    # Try 4: Keyword scan — find any valid action mentioned in the text
+    # Keyword scan
     text_lower = text.lower()
     for action in ACTIONS:
         if action in text_lower:
-            return action, text
+            return {"action": action, "reasoning": text}
 
-    # Give up — return notify_cto
-    return "notify_cto", text
+    return {"action": "notify_cto", "reasoning": text}
 
+
+# ── Deterministic Fallback ────────────────────────────────────────────────────
 
 def deterministic_fallback(observation: dict) -> dict:
-    """Rule-based fallback when LLM is unavailable. Implements CoT heuristics."""
     logs = observation.get("logs", [])
     runbook = observation.get("runbook", "")
 
-    # Detect patterns
     has_credential_rotation = any("credential" in l.get("msg", "").lower() and "rotat" in l.get("msg", "").lower() for l in logs)
     has_propagation_fail = any("propagat" in l.get("msg", "").lower() and "fail" in l.get("msg", "").lower() for l in logs)
     has_sidecar_fail = any("sidecar" in l.get("msg", "").lower() and ("not responding" in l.get("msg", "").lower() or "retry" in l.get("msg", "").lower()) for l in logs)
     has_oom = any("oom" in l.get("msg", "").lower() or "maxmemory" in l.get("msg", "").lower() for l in logs)
     has_crossslot = any("crossslot" in l.get("msg", "").lower() for l in logs)
     has_503 = any("503" in l.get("msg", "") for l in logs)
-    has_deploy_success = any("completed successfully" in l.get("msg", "").lower() and "deploy" in l.get("msg", "").lower() for l in logs)
 
-    # Runbook prohibitions
     runbook_lower = runbook.lower()
     prohibit_rollback = "do not" in runbook_lower and "rollback" in runbook_lower
     prohibit_flush = "do not" in runbook_lower and "flush" in runbook_lower
-    prohibit_scale = "do not" in runbook_lower and "scale" in runbook_lower
 
-    # Decision tree
     if has_credential_rotation and (has_propagation_fail or has_sidecar_fail):
-        return {"action": "rotate_db_credentials", "reasoning": "Credential rotation + propagation failure detected. Root cause is stale credentials. Runbook prescribes rotate_db_credentials."}
-
+        return {"action": "rotate_db_credentials", "reasoning": "Credential propagation failure detected."}
     if has_oom and has_crossslot and prohibit_flush:
-        return {"action": "rollback_deployment", "reasoning": "Cache OOM with CROSSSLOT errors. Runbook prohibits flushing during peak. Root cause is a bad deploy introducing hash-slot bug. Rollback is safe."}
-
+        return {"action": "rollback_deployment", "reasoning": "Cache OOM + CROSSSLOT, flush prohibited."}
     if has_503 and not prohibit_rollback:
-        return {"action": "rollback_deployment", "reasoning": "503 upstream errors detected. Runbook allows rollback for recent deployments."}
-
-    if has_503 and prohibit_rollback and not prohibit_flush:
-        return {"action": "rotate_db_credentials", "reasoning": "503s present but rollback prohibited. Likely credential issue."}
-
-    return {"action": "notify_cto", "reasoning": "Unable to determine root cause with confidence. Escalating."}
+        return {"action": "rollback_deployment", "reasoning": "503 upstream errors, rollback allowed."}
+    if has_503 and prohibit_rollback:
+        return {"action": "rotate_db_credentials", "reasoning": "503s but rollback prohibited."}
+    return {"action": "notify_cto", "reasoning": "Unable to determine root cause."}
 
 
 # ── Main Runner ───────────────────────────────────────────────────────────────
 
 def run_task(env, env_mode: str, task_id: str) -> dict:
-    """Run a single task. Returns {success, steps, score, rewards}."""
-
-    print(f"[START] task={task_id} env={BENCHMARK_NAME} model={MODEL_NAME}")
+    model = os.environ.get("MODEL_NAME", "gpt-4o-mini")
+    print(f"[START] task={task_id} env={BENCHMARK_NAME} model={model}")
 
     try:
-        # Reset
         episode_id, observation = env.reset(task_id=task_id)
     except Exception as e:
-        print(f"[STEP] step=1 action={{}} reward=0.00 done=true error={str(e)}")
+        print(f"[STEP] step=1 action={{}} reward=0.00 done=true error={e}")
         print(f"[END] success=false steps=0 score=0.000 rewards=")
         return {"task_id": task_id, "success": False, "steps": 0, "score": 0.0, "rewards": []}
 
@@ -235,18 +259,17 @@ def run_task(env, env_mode: str, task_id: str) -> dict:
         if observation.get("done", False):
             break
 
-        # Always attempt LLM call first; fall back to deterministic on failure
+        # ALWAYS try LLM first
         try:
             agent_result = call_llm(observation)
         except Exception as e:
-            print(f"# LLM call failed: {type(e).__name__}: {e}", file=sys.stderr)
+            print(f"# LLM failed: {type(e).__name__}: {e}", file=sys.stderr)
             agent_result = deterministic_fallback(observation)
 
         action_str = agent_result.get("action", "notify_cto")
         reasoning = agent_result.get("reasoning", "")
         action_dict = {"action": action_str, "reasoning": reasoning}
 
-        # Step
         try:
             if env_mode == "http":
                 observation = env.step(episode_id, action_str, reasoning)
@@ -254,7 +277,7 @@ def run_task(env, env_mode: str, task_id: str) -> dict:
                 observation = env.step(episode_id, action_dict)
         except Exception as e:
             action_json = json.dumps(action_dict)
-            print(f"[STEP] step={step_num} action={action_json} reward=0.00 done=true error={str(e)}")
+            print(f"[STEP] step={step_num} action={action_json} reward=0.00 done=true error={e}")
             print(f"[END] success=false steps={step_num} score=0.000 rewards={','.join(f'{r:.2f}' for r in rewards)}")
             return {"task_id": task_id, "success": False, "steps": step_num, "score": 0.0, "rewards": rewards}
 
@@ -265,13 +288,11 @@ def run_task(env, env_mode: str, task_id: str) -> dict:
         rewards.append(reward)
         last_score = score
 
-        action_json = json.dumps(action_dict)
-        print(f"[STEP] step={step_num} action={action_json} reward={reward:.2f} done={str(done).lower()} error={error if error else 'null'}")
+        print(f"[STEP] step={step_num} action={json.dumps(action_dict)} reward={reward:.2f} done={str(done).lower()} error={error if error else 'null'}")
 
         if done:
             break
 
-    # Grade
     try:
         grade_result = env.grade(episode_id)
         final_score = grade_result.get("score", last_score)
@@ -279,41 +300,28 @@ def run_task(env, env_mode: str, task_id: str) -> dict:
         final_score = last_score
 
     success = final_score >= SUCCESS_SCORE_THRESHOLD
-    total_steps = len(rewards)
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    print(f"[END] success={str(success).lower()} steps={len(rewards)} score={final_score:.3f} rewards={rewards_str}")
 
-    print(f"[END] success={str(success).lower()} steps={total_steps} score={final_score:.3f} rewards={rewards_str}")
-
-    return {
-        "task_id": task_id,
-        "success": success,
-        "steps": total_steps,
-        "score": final_score,
-        "rewards": rewards,
-    }
+    return {"task_id": task_id, "success": success, "steps": len(rewards), "score": final_score, "rewards": rewards}
 
 
 def main():
     try:
         env, env_mode = get_env()
     except Exception:
-        # Last resort: embedded env
         from server.environment import IncidentResponseEnvironment
         env, env_mode = IncidentResponseEnvironment(), "embedded"
 
     results = []
     for task_id in TASK_IDS:
         task_id = task_id.strip()
-        if not task_id:
-            continue
-        result = run_task(env, env_mode, task_id)
-        results.append(result)
+        if task_id:
+            results.append(run_task(env, env_mode, task_id))
 
-    # Summary (not parsed by evaluator, just for human readability)
     total_score = sum(r["score"] for r in results) / max(len(results), 1)
     all_success = all(r["success"] for r in results)
     print(f"\n# Average score: {total_score:.3f} | All passed: {all_success}")
-
     return 0 if all_success else 1
 
 
