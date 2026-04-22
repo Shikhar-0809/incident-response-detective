@@ -51,6 +51,27 @@ def get_env():
 
 # ── LLM Agent ─────────────────────────────────────────────────────────────────
 
+GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_MODEL = "llama-3.3-70b-versatile"
+
+GROQ_SYSTEM_PROMPT = """You are an expert Site Reliability Engineer (SRE) performing incident triage.
+
+You will receive an incident observation containing:
+1. logs: Raw system error messages with timestamps, levels, and services. Each line is prefixed with its index [N].
+2. chat_history: Slack-style messages from on-call engineers. WARNING: engineers may panic and suggest wrong fixes.
+3. runbook: Official procedures. Runbook prohibitions MUST be obeyed — they override chat suggestions.
+
+Analyze ALL three sources. Identify the ROOT CAUSE (not downstream symptoms). Select the single best remediation action.
+
+Respond with ONLY this JSON object and absolutely nothing else:
+{"action": "<action_name>", "evidence": <log_index>, "reasoning": "<one sentence>"}
+
+Where:
+- action is exactly one of: rollback_deployment, scale_infrastructure, flush_redis_cache, notify_cto, restart_api_gateway, rotate_db_credentials, enable_circuit_breaker, purge_cdn_cache
+- evidence is the integer index [N] of the single most diagnostic log line
+- reasoning is one sentence explaining the root cause and your action choice"""
+
+
 SYSTEM_PROMPT = """You are an expert Site Reliability Engineer (SRE) performing incident triage.
 
 You will receive an incident observation containing:
@@ -171,6 +192,95 @@ def deterministic_fallback(observation: dict) -> dict:
         return {"action": "rotate_db_credentials", "reasoning": "503s present but rollback prohibited. Likely credential issue."}
 
     return {"action": "notify_cto", "reasoning": "Unable to determine root cause with confidence. Escalating."}
+
+
+# ── Groq Agent ────────────────────────────────────────────────────────────────
+
+def build_groq_prompt(observation: dict) -> str:
+    """Format observation with indexed log lines so the model can cite evidence by index."""
+    logs_str = "\n".join(
+        f"  [{i}] [{l['ts']}] [{l['level']}] {l['service']}: {l['msg']}"
+        for i, l in enumerate(observation.get("logs", []))
+    )
+    chat_str = "\n".join(
+        f"  [{m['time']}] {m['user']}: {m['msg']}"
+        for m in observation.get("chat_history", [])
+    )
+    return (
+        "== INCIDENT OBSERVATION ==\n\n"
+        f"SYSTEM LOGS (each prefixed with index [N]):\n{logs_str}\n\n"
+        f"SLACK CHAT:\n{chat_str}\n\n"
+        f"RUNBOOK:\n{observation.get('runbook', 'No runbook provided.')}\n\n"
+        'Respond with JSON only: {"action": "...", "evidence": <log_index>, "reasoning": "one sentence"}'
+    )
+
+
+def run_groq_agent(task_id: str, adversarial: bool = False) -> float:
+    """Call Groq API for one episode. Returns grade score (0.0–1.0).
+
+    Falls back to deterministic_fallback if GROQ_API_KEY is not set or the
+    API call fails.
+    """
+    import requests as _requests
+    from environment import IncidentResponseEnvironment
+
+    groq_key = os.environ.get("GROQ_API_KEY", "")
+
+    env = IncidentResponseEnvironment()
+    episode_id, obs = env.reset(task_id=task_id, adversarial=adversarial)
+    log_count = len(obs.get("logs", []))
+
+    action, evidence = "notify_cto", 0
+
+    if groq_key:
+        try:
+            resp = _requests.post(
+                GROQ_API_URL,
+                headers={
+                    "Authorization": f"Bearer {groq_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": GROQ_MODEL,
+                    "messages": [
+                        {"role": "system", "content": GROQ_SYSTEM_PROMPT},
+                        {"role": "user",   "content": build_groq_prompt(obs)},
+                    ],
+                    "temperature": 0,
+                    "max_tokens": 256,
+                },
+                timeout=30,
+            )
+            resp.raise_for_status()
+            text = resp.json()["choices"][0]["message"]["content"].strip()
+
+            # Strip markdown code fences if the model wraps its output
+            if "```" in text:
+                text = text.split("```")[1]
+                if text.startswith("json"):
+                    text = text[4:]
+                text = text.strip()
+
+            parsed = json.loads(text)
+            action = parsed.get("action", "notify_cto")
+            try:
+                evidence = int(parsed.get("evidence", 0))
+            except (TypeError, ValueError):
+                evidence = 0
+
+        except Exception:
+            fb = deterministic_fallback(obs)
+            action, evidence = fb["action"], 0
+    else:
+        fb = deterministic_fallback(obs)
+        action, evidence = fb["action"], 0
+
+    # Clamp to valid log index range so we don't waste the evidence penalty
+    if log_count:
+        evidence = max(0, min(evidence, log_count - 1))
+
+    env.step(episode_id, {"action": action, "evidence": evidence})
+    return env.grade(episode_id)["score"]
 
 
 # ── Main Runner ───────────────────────────────────────────────────────────────

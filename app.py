@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional
-from server.environment import IncidentResponseEnvironment
+from environment import IncidentResponseEnvironment
 
 app = FastAPI(
     title="Incident-Response-Detective",
@@ -25,6 +25,7 @@ env = IncidentResponseEnvironment()
 
 class ResetRequest(BaseModel):
     task_id: str = "task_easy"
+    adversarial: bool = False
 
 class StepRequest(BaseModel):
     episode_id: str
@@ -49,7 +50,7 @@ def get_tasks():
 @app.post("/reset")
 def reset(req: ResetRequest):
     try:
-        episode_id, observation = env.reset(task_id=req.task_id)
+        episode_id, observation = env.reset(task_id=req.task_id, adversarial=req.adversarial)
         return {"episode_id": episode_id, "observation": observation}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

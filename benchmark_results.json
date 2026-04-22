@@ -1,0 +1,128 @@
+[
+  {
+    "task": "task_easy",
+    "mode": "standard",
+    "model": "oracle",
+    "avg_score": 0.999,
+    "std_dev": 0.0
+  },
+  {
+    "task": "task_easy",
+    "mode": "standard",
+    "model": "naive(rollback_deployment)",
+    "avg_score": 0.999,
+    "std_dev": 0.0
+  },
+  {
+    "task": "task_easy",
+    "mode": "standard",
+    "model": "llama-3.3-70b",
+    "avg_score": 0.999,
+    "std_dev": 0.0
+  },
+  {
+    "task": "task_easy",
+    "mode": "adversarial",
+    "model": "oracle",
+    "avg_score": 0.999,
+    "std_dev": 0.0
+  },
+  {
+    "task": "task_easy",
+    "mode": "adversarial",
+    "model": "naive(scale_infrastructure)",
+    "avg_score": 0.001,
+    "std_dev": 0.0
+  },
+  {
+    "task": "task_easy",
+    "mode": "adversarial",
+    "model": "llama-3.3-70b",
+    "avg_score": 0.001,
+    "std_dev": 0.0
+  },
+  {
+    "task": "task_medium",
+    "mode": "standard",
+    "model": "oracle",
+    "avg_score": 0.999,
+    "std_dev": 0.0
+  },
+  {
+    "task": "task_medium",
+    "mode": "standard",
+    "model": "naive(rollback_deployment)",
+    "avg_score": 0.999,
+    "std_dev": 0.0
+  },
+  {
+    "task": "task_medium",
+    "mode": "standard",
+    "model": "llama-3.3-70b",
+    "avg_score": 0.999,
+    "std_dev": 0.0
+  },
+  {
+    "task": "task_medium",
+    "mode": "adversarial",
+    "model": "oracle",
+    "avg_score": 0.999,
+    "std_dev": 0.0
+  },
+  {
+    "task": "task_medium",
+    "mode": "adversarial",
+    "model": "naive(flush_redis_cache)",
+    "avg_score": 0.001,
+    "std_dev": 0.0
+  },
+  {
+    "task": "task_medium",
+    "mode": "adversarial",
+    "model": "llama-3.3-70b",
+    "avg_score": 0.999,
+    "std_dev": 0.0
+  },
+  {
+    "task": "task_hard",
+    "mode": "standard",
+    "model": "oracle",
+    "avg_score": 0.999,
+    "std_dev": 0.0
+  },
+  {
+    "task": "task_hard",
+    "mode": "standard",
+    "model": "naive(rollback_deployment)",
+    "avg_score": 0.001,
+    "std_dev": 0.0
+  },
+  {
+    "task": "task_hard",
+    "mode": "standard",
+    "model": "llama-3.3-70b",
+    "avg_score": 0.999,
+    "std_dev": 0.0
+  },
+  {
+    "task": "task_hard",
+    "mode": "adversarial",
+    "model": "oracle",
+    "avg_score": 0.999,
+    "std_dev": 0.0
+  },
+  {
+    "task": "task_hard",
+    "mode": "adversarial",
+    "model": "naive(rollback_deployment)",
+    "avg_score": 0.001,
+    "std_dev": 0.0
+  },
+  {
+    "task": "task_hard",
+    "mode": "adversarial",
+    "model": "llama-3.3-70b",
+    "avg_score": 0.999,
+    "std_dev": 0.0
+  }
+]
