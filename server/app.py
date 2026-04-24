@@ -1,15 +1,9 @@
 """FastAPI server for Incident-Response-Detective OpenEnv environment."""
 
 import os
-import sys
-
-# Ensure project root is importable
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from typing import Optional
 from server.environment import IncidentResponseEnvironment
 
 app = FastAPI(
