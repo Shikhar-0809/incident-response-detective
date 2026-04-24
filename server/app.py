@@ -4,7 +4,7 @@ import os
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from server.environment import IncidentResponseEnvironment
+from environment import IncidentResponseEnvironment
 
 app = FastAPI(
     title="Incident-Response-Detective",
