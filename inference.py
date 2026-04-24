@@ -71,7 +71,6 @@ Where:
 - evidence is the integer index [N] of the single most diagnostic log line
 - reasoning is one sentence explaining the root cause and your action choice"""
 
-
 SYSTEM_PROMPT = """You are an expert Site Reliability Engineer (SRE) performing incident triage.
 
 You will receive an incident observation containing:
@@ -153,8 +152,7 @@ def call_llm(observation: dict) -> dict:
             "action": result.get("action", "notify_cto"),
             "reasoning": result.get("reasoning", ""),
         }
-    except Exception as e:
-        # Fallback: deterministic policy if LLM fails
+    except Exception:
         return deterministic_fallback(observation)
 
 
@@ -290,11 +288,7 @@ def run_task(env, env_mode: str, task_id: str) -> dict:
 
     print(f"[START] task={task_id} env={BENCHMARK_NAME} model={MODEL_NAME}")
 
-    # Reset
-    if env_mode == "http":
-        episode_id, observation = env.reset(task_id=task_id)
-    else:
-        episode_id, observation = env.reset(task_id=task_id)
+    episode_id, observation = env.reset(task_id=task_id)
 
     rewards = []
     last_score = 0.0
@@ -312,7 +306,6 @@ def run_task(env, env_mode: str, task_id: str) -> dict:
         action_str = agent_result["action"]
         action_dict = {"action": action_str, "reasoning": agent_result.get("reasoning", "")}
 
-        # Step
         if env_mode == "http":
             observation = env.step(episode_id, action_str, agent_result.get("reasoning", ""))
         else:
@@ -331,12 +324,7 @@ def run_task(env, env_mode: str, task_id: str) -> dict:
         if done:
             break
 
-    # Grade
-    if env_mode == "http":
-        grade_result = env.grade(episode_id)
-    else:
-        grade_result = env.grade(episode_id)
-
+    grade_result = env.grade(episode_id)
     final_score = grade_result.get("score", last_score)
     success = final_score >= SUCCESS_SCORE_THRESHOLD
     total_steps = len(rewards)
@@ -364,7 +352,6 @@ def main():
         result = run_task(env, env_mode, task_id)
         results.append(result)
 
-    # Summary (not parsed by evaluator, just for human readability)
     total_score = sum(r["score"] for r in results) / max(len(results), 1)
     all_success = all(r["success"] for r in results)
     print(f"\n# Average score: {total_score:.3f} | All passed: {all_success}")

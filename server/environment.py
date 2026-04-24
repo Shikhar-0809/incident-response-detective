@@ -189,11 +189,9 @@ class IncidentResponseEnvironment:
         ep = self._episodes[episode_id]
 
         if ep["resolved"]:
-            # Perfect resolution on step 1 = 0.999, later steps lower
             base = 0.999 if ep["step_count"] == 1 else max(0.5, 0.999 - 0.15 * (ep["step_count"] - 1))
             return {"score": round(base, 3), "resolved": True, "steps": ep["step_count"]}
         else:
-            # Partial credit: did the agent avoid dangerous actions?
             task = TASKS[ep["task_id"]]
             dangerous_taken = [a for a in ep["actions_taken"] if a in task["dangerous_actions"]]
             if dangerous_taken:

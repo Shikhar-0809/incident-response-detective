@@ -5,7 +5,7 @@ colorFrom: red
 colorTo: yellow
 sdk: docker
 app_port: 7860
-short_description: OpenEnv incident triage environment with conflicting signals.
+short_description: OpenEnv incident triage with conflicting signals.
 tags:
   - openenv
 ---
@@ -159,8 +159,8 @@ When connected to an LLM via the proxy, the agent uses Chain-of-Thought reasonin
 |---|---|---|
 | `GET` | `/health` | Returns `{"status": "healthy"}` |
 | `GET` | `/tasks` | Lists all 3 tasks with metadata |
-| `POST` | `/reset` | Start episode. Body: `{"task_id": "task_easy"}` (or empty for default) |
-| `POST` | `/step` | Take action. Body: `{"episode_id": "...", "action": {"action": "rollback_deployment"}}` |
+| `POST` | `/reset` | Start episode. Body: `{"task_id": "task_easy", "adversarial": false}` |
+| `POST` | `/step` | Take action. Body: `{"episode_id": "...", "action": {"action": "rollback_deployment", "evidence": 0}}` |
 | `GET` | `/state` | Episode state. Query: `?episode_id=...` |
 | `POST` | `/grader` | Grade episode. Body: `{"episode_id": "..."}` → `{"score": 0.999}` |
 
@@ -217,7 +217,6 @@ openenv validate
 ├── pyproject.toml          # Dependencies + server entry point
 ├── requirements.txt
 ├── task_definitions.py     # Scenario data, action spaces, reward logic
-├── uv.lock
 └── server/
     ├── __init__.py
     ├── app.py              # FastAPI server with all endpoints

@@ -180,6 +180,7 @@ ADVERSARIAL_OVERLAYS = {
 }
 
 
+
 def compute_reward(task_id: str, action: str, step_number: int) -> dict:
     """
     Compute reward on two axes: Safety (did it follow the Runbook?) and
