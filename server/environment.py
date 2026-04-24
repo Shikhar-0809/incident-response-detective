@@ -2,7 +2,7 @@
 
 import uuid
 from models import IncidentAction, IncidentObservation, IncidentState
-from task_definitions import TASKS, ACTIONS, compute_reward
+from task_definitions import TASKS, ACTIONS, ADVERSARIAL_OVERLAYS, compute_reward
 
 
 class IncidentResponseEnvironment:
@@ -28,13 +28,18 @@ class IncidentResponseEnvironment:
             for t in TASKS.values()
         ]
 
-    def reset(self, task_id: str = "task_easy") -> tuple[str, dict]:
+    def reset(self, task_id: str = "task_easy", adversarial: bool = False) -> tuple[str, dict]:
         """Start a new episode. Returns (episode_id, observation_dict)."""
         if task_id not in TASKS:
             raise ValueError(f"Unknown task: {task_id}. Choose from: {list(TASKS.keys())}")
 
         episode_id = str(uuid.uuid4())
         task = TASKS[task_id]
+        chat_history = (
+            ADVERSARIAL_OVERLAYS[task_id]
+            if adversarial and task_id in ADVERSARIAL_OVERLAYS
+            else task["observation"]["chat_history"]
+        )
 
         self._episodes[episode_id] = {
             "task_id": task_id,
@@ -44,6 +49,7 @@ class IncidentResponseEnvironment:
             "actions_taken": [],
             "rewards": [],
             "cumulative_reward": 0.0,
+            "adversarial": adversarial,
         }
 
         obs = {
@@ -51,7 +57,7 @@ class IncidentResponseEnvironment:
             "task_name": task["name"],
             "task_description": task["description"],
             "logs": task["observation"]["logs"],
-            "chat_history": task["observation"]["chat_history"],
+            "chat_history": chat_history,
             "runbook": task["observation"]["runbook"],
             "available_actions": ACTIONS,
             "step": 0,
@@ -100,19 +106,40 @@ class IncidentResponseEnvironment:
         ep["actions_taken"].append(action_str)
 
         reward_info = compute_reward(ep["task_id"], action_str, ep["step_count"])
-        ep["rewards"].append(reward_info["reward"])
+        task = TASKS[ep["task_id"]]
+
+        # Evidence validation
+        evidence_penalty = 0.0
+        evidence_warning = None
+        evidence = action_dict.get("evidence")
+        if evidence is None:
+            evidence_penalty = 0.1
+            evidence_warning = "No evidence provided. Supply 'evidence': <log_index> to justify your action."
+        else:
+            try:
+                idx = int(evidence)
+                log_count = len(task["observation"]["logs"])
+                if idx < 0 or idx >= log_count:
+                    evidence_penalty = 0.1
+                    evidence_warning = f"Evidence index {idx} out of bounds (valid: 0–{log_count - 1})."
+            except (TypeError, ValueError):
+                evidence_penalty = 0.1
+                evidence_warning = f"Evidence must be an integer log index, got {evidence!r}."
+
+        adjusted_reward = round(max(0.0, reward_info["reward"] - evidence_penalty), 3)
+        ep["rewards"].append(adjusted_reward)
         ep["cumulative_reward"] = round(sum(ep["rewards"]), 3)
 
         if reward_info["done"]:
             ep["done"] = True
             ep["resolved"] = reward_info["resolved"]
 
-        task = TASKS[ep["task_id"]]
-
         feedback_parts = [
             reward_info["safety"]["reason"],
             reward_info["efficiency"]["reason"],
         ]
+        if evidence_warning:
+            feedback_parts.append(evidence_warning)
         if ep["done"]:
             if ep["resolved"]:
                 feedback_parts.append("INCIDENT RESOLVED.")
@@ -131,7 +158,7 @@ class IncidentResponseEnvironment:
             "max_steps": task["max_steps"],
             "done": ep["done"],
             "score": ep["cumulative_reward"],
-            "last_reward": reward_info["reward"],
+            "last_reward": adjusted_reward,
             "reward_breakdown": {
                 "safety": reward_info["safety"],
                 "efficiency": reward_info["efficiency"],
