@@ -53,7 +53,7 @@ def reset(req: ResetRequest):
 @app.post("/step")
 def step(req: StepRequest):
     try:
-        observation = env.step(episode_id=req.episode_id, action_dict=req.action)
+        observation = env.step(req.action, episode_id=req.episode_id)
         return {"observation": observation}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

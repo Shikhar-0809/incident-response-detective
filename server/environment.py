@@ -3,6 +3,7 @@
 import os
 import sys
 import uuid
+from typing import Any, Optional
 
 # Ensure project root (/app) is on sys.path so models and task_definitions are importable
 # regardless of how this module is loaded (as server.environment or directly).
@@ -10,19 +11,21 @@ _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
+from openenv.core import Environment
 from models import IncidentAction, IncidentObservation, IncidentState
 from task_definitions import TASKS, ACTIONS, ADVERSARIAL_OVERLAYS, compute_reward
 
 
-class IncidentResponseEnvironment:
+class IncidentResponseEnvironment(Environment):
     """
-    OpenEnv-compatible environment for incident triage.
-    Implements reset(), step(), state() following the Gymnasium-style API.
+    OpenEnv environment for incident triage.
+    Implements reset(), step(), state following the Gymnasium-style API.
     """
 
     SUPPORTS_CONCURRENT_SESSIONS = True
 
     def __init__(self):
+        super().__init__()
         self._episodes: dict[str, dict] = {}
 
     def get_tasks(self) -> list[dict]:
@@ -37,12 +40,25 @@ class IncidentResponseEnvironment:
             for t in TASKS.values()
         ]
 
-    def reset(self, task_id: str = "task_easy", adversarial: bool = False) -> tuple[str, dict]:
-        """Start a new episode. Returns (episode_id, observation_dict)."""
+    def reset(
+        self,
+        seed: Optional[int] = None,
+        episode_id: Optional[str] = None,
+        **kwargs: Any,
+    ) -> tuple[str, dict]:
+        """Start a new episode. Returns (episode_id, observation_dict).
+
+        Kwargs:
+            task_id (str): Task to run. Defaults to "task_easy".
+            adversarial (bool): Use adversarial chat overlay. Defaults to False.
+        """
+        task_id: str = kwargs.get("task_id", "task_easy")
+        adversarial: bool = kwargs.get("adversarial", False)
+
         if task_id not in TASKS:
             raise ValueError(f"Unknown task: {task_id}. Choose from: {list(TASKS.keys())}")
 
-        episode_id = str(uuid.uuid4())
+        new_episode_id = str(uuid.uuid4())
         task = TASKS[task_id]
         chat_history = (
             ADVERSARIAL_OVERLAYS[task_id]
@@ -50,7 +66,7 @@ class IncidentResponseEnvironment:
             else task["observation"]["chat_history"]
         )
 
-        self._episodes[episode_id] = {
+        self._episodes[new_episode_id] = {
             "task_id": task_id,
             "step_count": 0,
             "done": False,
@@ -78,10 +94,24 @@ class IncidentResponseEnvironment:
             "feedback": "Episode started. Analyze the observation and choose a remediation action.",
             "last_action_error": None,
         }
-        return episode_id, obs
+        return new_episode_id, obs
 
-    def step(self, episode_id: str, action_dict: dict) -> dict:
-        """Execute an action. Returns observation dict."""
+    def step(
+        self,
+        action: Any,
+        timeout_s: Optional[float] = None,
+        **kwargs: Any,
+    ) -> dict:
+        """Execute an action. Returns observation dict.
+
+        Args:
+            action: Action dict with keys 'action' (str) and optionally 'evidence' (int).
+        Kwargs:
+            episode_id (str): The episode to step.
+        """
+        action_dict: dict = action if isinstance(action, dict) else {}
+        episode_id: str = kwargs.get("episode_id", "")
+
         if episode_id not in self._episodes:
             raise ValueError(f"Unknown episode_id: {episode_id}")
 
@@ -176,7 +206,22 @@ class IncidentResponseEnvironment:
             "last_action_error": None,
         }
 
+    @property
+    def state(self) -> dict:
+        """Returns a summary of all active episode states."""
+        return {
+            eid: {
+                "task_id": ep["task_id"],
+                "step_count": ep["step_count"],
+                "done": ep["done"],
+                "resolved": ep["resolved"],
+                "cumulative_reward": ep["cumulative_reward"],
+            }
+            for eid, ep in self._episodes.items()
+        }
+
     def get_state(self, episode_id: str) -> dict:
+        """Per-episode state lookup used by the server /state endpoint."""
         if episode_id not in self._episodes:
             raise ValueError(f"Unknown episode_id: {episode_id}")
         ep = self._episodes[episode_id]
