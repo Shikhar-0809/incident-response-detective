@@ -1,4 +1,4 @@
-name: incident_response_detective
+name: incident-response-detective
 version: "1.0.0"
 description: >
   RL environment for incident triage. An agent must analyze system logs, Slack chat,

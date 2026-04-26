@@ -30,7 +30,7 @@ tags:
 > `train.py` in this repo is the **evaluation harness** used to produce the reward/loss curves below — it does not update model weights.
 > The trained LoRA adapter is published at [Shiggii/qwen-incident-response-grpo](https://huggingface.co/Shiggii/qwen-incident-response-grpo).
 >
-> **Experimental tracking:** Full per-step metrics available in [`trainer_state.json`](https://huggingface.co/Shiggii/qwen-incident-response-grpo/blob/main/trainer_state.json) on the model repo.
+> **Experimental tracking:** Full per-step metrics in [`trainer_state.json`](https://huggingface.co/Shiggii/qwen-incident-response-grpo/blob/main/trainer_state.json) (384 GRPO steps × ~20 metrics/step: loss, reward, reward_std, kl, entropy, grad_norm, learning_rate, clip ratios, completion lengths) and exact hyperparameters in [`training_args.bin`](https://huggingface.co/Shiggii/qwen-incident-response-grpo/blob/main/training_args.bin) on the model repo. Regenerate all plots with `python regenerate_plots.py`.
 
 ## Motivation
 
@@ -154,6 +154,8 @@ The reward curve is generated directly from TRL `log_history` in `data/trainer_s
 
 GRPO surrogate policy loss over **384** training steps from TRL `log_history`. The loss reflects advantage-normalized policy updates over the run.
 
+> Note: GRPO surrogate loss is normalized by group-relative advantages, so it can sit near zero or briefly go negative when within-group reward variance shrinks. The reward curve and before/after bars are the primary signals; loss is included for completeness.
+
 ### Training Progression: Early vs Late
 
 ![Before After Comparison](before_after.png)
@@ -170,7 +172,7 @@ This aggregate view confirms the model learned effectively and maintained perfor
 
 ## Model Evaluation
 
-During environment prototyping, we evaluated model behavior across three difficulty levels using Groq API (llama-3.1-8B-instant):
+**Local Qwen reproduction of the Groq harness numbers** — cross-validates that both inference backends (local transformers vs Groq API) produce consistent tier-wise scores:
 
 ![Evaluation by Difficulty](evaluation_by_difficulty.png)
 
@@ -427,6 +429,8 @@ python inference.py
 HF_TOKEN=your_key API_BASE_URL=your_endpoint MODEL_NAME=your_model python inference.py
 ```
 
+> `inference.py` runs the **standard** chat overlay (the easy case where signals agree). The adversarial story — where the same models score 0.001 — lives in `python benchmark.py` and `python train.py`. See `benchmark_results.json` for the cross-validation table.
+
 ### Run Benchmark
 
 ```bash
@@ -465,7 +469,7 @@ openenv validate
 ├── benchmark.py               # Cross-validation: oracle, naive, LLM baselines
 ├── benchmark_results.json     # Saved benchmark results
 ├── client.py                  # HTTP client for remote env access
-├── environment.py             # Root-level environment (used by train.py, inference.py)
+├── environment.py             # Root-level environment (used by train.py, benchmark.py, inference.py)
 ├── inference.py               # Baseline agent with LLM + deterministic fallback
 ├── loss_curve.png             # Training evidence: GRPO policy loss curve
 ├── models.py                  # Typed Action, Observation, State dataclasses
@@ -477,6 +481,9 @@ openenv validate
 ├── task_definitions.py        # Scenario data, action spaces, reward logic, adversarial overlays
 ├── train.py                   # GRPO evaluation harness (generates training curves)
 ├── training_log.json          # Raw numbers from evaluation run
+# `server/environment.py` is what the deployed Space runs (inherits openenv.core.Environment).
+# Root `environment.py` is the in-process duplicate used by train.py / benchmark.py / inference.py
+# so they can run without spinning up an HTTP server. Both share task_definitions.py.
 └── server/
     ├── __init__.py
     ├── app.py                 # FastAPI server deployed to HF Space
