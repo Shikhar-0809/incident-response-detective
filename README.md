@@ -59,6 +59,24 @@ Three tasks, three distinct reasoning challenges:
 | `task_medium` | Medium | Logs scream "flush cache"; runbook explicitly prohibits it during peak hours | `rollback_deployment` |
 | `task_hard` | Hard | 9 of 11 chat messages demand rollback; root cause is an INFO-level credential rotation event 60 seconds earlier | `rotate_db_credentials` |
 
+## Interactive Demo: Service Dependency Visualization
+
+To make the environment's failure cascade concrete, we built a self-contained interactive HTML visualization (`dag_demo.html`) that walks through the `task_hard` scenario step-by-step.
+
+**What it shows:**
+
+- **Service dependency graph**: cron-scheduler → vault-agent → API pods → pg-primary → api-gateway → redis-cluster
+- **Cascading failure animation**: a vault credential rotation triggers a partial sync failure, which cascades into DB auth errors, API 503s, and circuit-breaker openings
+- **The authority bias trap**: an optional "Adversarial Mode" overlay shows the misleading "v2.9.0 Deploy" red herring that adversarial Slack messages reference — it visually demonstrates why naive agents pick `rollback_deployment` instead of investigating the credential rotation
+- **Remediation actions with scores**: clicking each action shows the reward (rotate_db_credentials = 0.999, all others = 0.001) and animates either full recovery (green) or continued failure (flashing red)
+- **Event timeline**: timestamped sequence of cascade events matching what the agent sees in the `logs` field
+
+**View it:**
+
+[`dag_demo.html`](dag_demo.html) — open in any browser, no dependencies needed.
+
+This visualization clarifies why the environment is non-trivial: the loudest signals (red 503 errors, downstream cascades, confident chat advice) all point toward the wrong actions. The correct fix requires tracing back to a quiet INFO-level credential rotation event — exactly the reasoning pattern we want to train.
+
 ---
 
 ## Adversarial Mode — The Core Innovation

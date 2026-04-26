@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Incident Response — Service Dependency DAG</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:100%;height:100%;background:#0d1117;color:#e6edf3;font-family:'Courier New',monospace;overflow-x:hidden}
+body{display:flex;flex-direction:column;min-height:100vh}
+
+header{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:12px 24px;background:#161b22;
+  border-bottom:1px solid #30363d;flex-shrink:0
+}
+header h1{font-size:13px;color:#58a6ff;letter-spacing:1.5px;text-transform:uppercase}
+#score-badge{
+  font-size:12px;padding:4px 14px;border-radius:20px;
+  background:#21262d;border:1px solid #30363d;color:#8b949e;
+  transition:all .4s ease
+}
+.score-good{background:#0d4429!important;border-color:#22c55e!important;color:#22c55e!important}
+.score-bad {background:#3d1b1b!important;border-color:#ef4444!important;color:#ef4444!important}
+
+main{display:flex;flex:1;padding:16px;gap:16px;min-height:0}
+
+#dag-wrap{
+  flex:1;display:flex;align-items:center;justify-content:center;
+  background:#0d1117;border-radius:10px;
+  border:1px solid #21262d;overflow:hidden
+}
+#dag-svg{width:100%;height:auto;max-height:calc(100vh - 110px)}
+
+/* ── Node shapes ── */
+.node-rect,.node-circ{stroke-width:1.5;transition:fill .35s,stroke .35s}
+.s-inactive{fill:#161b22;stroke:#30363d}
+.s-healthy {fill:#0d4429;stroke:#22c55e}
+.s-warning {fill:#3d2a00;stroke:#f59e0b}
+.s-failing {fill:#3d1b1b;stroke:#ef4444}
+.s-recovered{fill:#0d4429;stroke:#22c55e}
+
+.node-label{fill:#e6edf3;font-size:11px;font-family:'Courier New',monospace;text-anchor:middle;dominant-baseline:middle;pointer-events:none;user-select:none}
+.node-sub  {fill:#6e7681;font-size:9px; font-family:'Courier New',monospace;text-anchor:middle;dominant-baseline:middle;pointer-events:none;user-select:none}
+.node-g    {cursor:pointer}
+.node-g:hover .node-rect,.node-g:hover .node-circ{stroke-width:2.5}
+
+/* ── Edges ── */
+.edge{stroke:#30363d;stroke-width:1.5;fill:none;transition:stroke .4s,stroke-width .4s}
+.e-fail{stroke:#ef4444;stroke-width:2}
+.e-ok  {stroke:#22c55e;stroke-width:2}
+.e-warn{stroke:#f59e0b;stroke-width:2}
+
+/* ── Pulse ── */
+@keyframes pulseRed{0%,100%{opacity:1}50%{opacity:.45}}
+@keyframes pulseAmb{0%,100%{opacity:1}50%{opacity:.55}}
+.pulse-red{animation:pulseRed .9s ease-in-out infinite}
+.pulse-amb{animation:pulseAmb 1.1s ease-in-out infinite}
+
+/* ── Adversarial overlay ── */
+#adv-group{display:none}
+
+/* ── Right panel ── */
+#panel{width:270px;display:flex;flex-direction:column;gap:12px;overflow-y:auto;max-height:calc(100vh - 110px)}
+.card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:14px}
+.card h3{font-size:10px;color:#58a6ff;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:10px}
+
+/* inspector */
+#insp{font-size:11px;color:#8b949e;line-height:1.65}
+.insp-name{color:#e6edf3;font-size:13px;font-weight:700;margin-bottom:5px}
+.insp-pill{display:inline-block;padding:2px 10px;border-radius:12px;font-size:10px;margin-bottom:8px}
+.pill-inactive{background:#21262d;color:#8b949e}
+.pill-healthy {background:#0d4429;color:#22c55e}
+.pill-warning {background:#3d2a00;color:#f59e0b}
+.pill-failing {background:#3d1b1b;color:#ef4444}
+.pill-recovered{background:#0d4429;color:#22c55e}
+.insp-log{
+  font-size:10px;background:#0d1117;padding:8px 10px;
+  border-radius:4px;margin-top:4px;word-break:break-word;line-height:1.7;
+  border-left:3px solid #30363d
+}
+.log-error{border-left-color:#ef4444;color:#fca5a5}
+.log-warn {border-left-color:#f59e0b;color:#fcd34d}
+.log-info {border-left-color:#22c55e;color:#86efac}
+.log-idle {border-left-color:#30363d;color:#6e7681}
+
+/* buttons */
+.btn{
+  width:100%;padding:8px 12px;border-radius:6px;
+  border:1px solid #30363d;background:#21262d;
+  color:#e6edf3;font-family:'Courier New',monospace;font-size:11px;
+  cursor:pointer;text-align:left;display:flex;justify-content:space-between;
+  align-items:center;margin-bottom:6px;transition:background .15s,border-color .15s
+}
+.btn:last-child{margin-bottom:0}
+.btn:hover:not(:disabled){background:#2d333b;border-color:#58a6ff}
+.btn:disabled{opacity:.35;cursor:not-allowed}
+.btn .tag{font-size:10px;opacity:.7}
+.btn-blue  {border-color:#58a6ff;color:#58a6ff}
+.btn-green {border-color:#22c55e;color:#22c55e}
+.btn-red   {border-color:#ef4444;color:#ef4444}
+.btn-amber {border-color:#f59e0b;color:#f59e0b}
+.btn-grey  {border-color:#8b949e;color:#8b949e}
+.btn-purple{border-color:#a855f7;color:#a855f7}
+.btn-purple.adv-on{background:#1a0a2e}
+
+/* timeline */
+#tl-list{font-size:10px;color:#8b949e;line-height:1}
+.tl-row{display:flex;align-items:flex-start;gap:8px;padding:4px 0}
+.tl-dot{width:8px;height:8px;border-radius:50%;background:#30363d;flex-shrink:0;margin-top:2px;transition:background .3s}
+.tl-dot.d-fail{background:#ef4444}
+.tl-dot.d-warn{background:#f59e0b}
+.tl-dot.d-ok  {background:#22c55e}
+.tl-text{line-height:1.5}
+
+footer{font-size:10px;color:#30363d;text-align:center;padding:8px;flex-shrink:0}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>⬡ Incident Response — Service Dependency DAG</h1>
+  <span id="score-badge">No action taken</span>
+</header>
+
+<main>
+<!-- ═══════════════════════════ DAG SVG ═══════════════════════════ -->
+<div id="dag-wrap">
+<svg id="dag-svg" viewBox="0 0 920 710" xmlns="http://www.w3.org/2000/svg">
+<defs>
+  <!-- default grey arrow -->
+  <marker id="arr" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+    <polygon points="0 0,8 3,0 6" fill="#30363d"/>
+  </marker>
+  <!-- red arrow -->
+  <marker id="arr-fail" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+    <polygon points="0 0,8 3,0 6" fill="#ef4444"/>
+  </marker>
+  <!-- green arrow -->
+  <marker id="arr-ok" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+    <polygon points="0 0,8 3,0 6" fill="#22c55e"/>
+  </marker>
+  <!-- amber arrow -->
+  <marker id="arr-warn" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+    <polygon points="0 0,8 3,0 6" fill="#f59e0b"/>
+  </marker>
+  <!-- purple dashed arrow (adversarial) -->
+  <marker id="arr-adv" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+    <polygon points="0 0,8 3,0 6" fill="#a855f7"/>
+  </marker>
+
+  <!-- glow filters -->
+  <filter id="glow-r" x="-30%" y="-30%" width="160%" height="160%">
+    <feGaussianBlur stdDeviation="4" result="b"/>
+    <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+  </filter>
+  <filter id="glow-g" x="-30%" y="-30%" width="160%" height="160%">
+    <feGaussianBlur stdDeviation="5" result="b"/>
+    <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+  </filter>
+</defs>
+
+<!-- ── Edges (behind nodes) ────────────────────────────── -->
+
+<!-- cron → vault -->
+<line id="e-cv" class="edge" x1="460" y1="80" x2="460" y2="138" marker-end="url(#arr)"/>
+
+<!-- vault → pods (cubic bezier fan-out from bottom of vault) -->
+<path id="e-vp1" class="edge" d="M 390 192 C 390 224 188 224 188 250" marker-end="url(#arr)"/>
+<path id="e-vp2" class="edge" d="M 425 192 C 425 224 320 224 320 250" marker-end="url(#arr)"/>
+<path id="e-vp3" class="edge" d="M 460 192 L 460 250" marker-end="url(#arr)"/>
+<path id="e-vp4" class="edge" d="M 495 192 C 495 224 600 224 600 250" marker-end="url(#arr)"/>
+<path id="e-vp5" class="edge" d="M 530 192 C 530 224 732 224 732 250" marker-end="url(#arr)"/>
+
+<!-- pods → pg (cubic bezier fan-in to top of pg) -->
+<path id="e-p1g" class="edge" d="M 188 318 C 188 346 430 346 430 366" marker-end="url(#arr)"/>
+<path id="e-p2g" class="edge" d="M 320 318 C 320 346 445 346 445 366" marker-end="url(#arr)"/>
+<path id="e-p3g" class="edge" d="M 460 318 L 460 366" marker-end="url(#arr)"/>
+<path id="e-p4g" class="edge" d="M 600 318 C 600 346 475 346 475 366" marker-end="url(#arr)"/>
+<path id="e-p5g" class="edge" d="M 732 318 C 732 346 490 346 490 366" marker-end="url(#arr)"/>
+
+<!-- pg → gateway -->
+<line id="e-gg" class="edge" x1="460" y1="416" x2="460" y2="464" marker-end="url(#arr)"/>
+
+<!-- gateway → redis -->
+<line id="e-gr" class="edge" x1="460" y1="514" x2="460" y2="574" marker-end="url(#arr)"/>
+
+<!-- ── Adversarial overlay ────────────────────────────── -->
+<g id="adv-group">
+  <rect x="630" y="88" width="210" height="66" rx="7"
+        fill="#1a0a2e" stroke="#a855f7" stroke-width="1.5" stroke-dasharray="7,3"/>
+  <text x="735" y="114" text-anchor="middle" fill="#c084fc" font-size="12" font-family="Courier New,monospace">v2.9.0 Deploy</text>
+  <text x="735" y="132" text-anchor="middle" fill="#7c3aed" font-size="9" font-family="Courier New,monospace">◈ red herring — not the root cause</text>
+  <!-- arrows from deploy box toward pods 3 & 4 -->
+  <path d="M 680 154 C 640 200 608 218 600 250"
+        stroke="#a855f7" stroke-width="1.5" stroke-dasharray="5,3" fill="none" marker-end="url(#arr-adv)"/>
+  <path d="M 700 154 C 680 200 472 220 464 250"
+        stroke="#a855f7" stroke-width="1.5" stroke-dasharray="5,3" fill="none" marker-end="url(#arr-adv)"/>
+  <text x="735" y="175" text-anchor="middle" fill="#6d28d9" font-size="8" font-family="Courier New,monospace">chat says: rollback</text>
+</g>
+
+<!-- ── Nodes ───────────────────────────────────────────── -->
+
+<!-- cron-scheduler -->
+<g class="node-g" id="ng-cron" data-nid="cron" onclick="inspect('cron')">
+  <rect id="nr-cron" class="node-rect s-inactive" x="320" y="30" width="280" height="50" rx="8"/>
+  <text x="460" y="50" class="node-label">cron-scheduler</text>
+  <text x="460" y="66" class="node-sub">db-credential-rotate · CR-4491</text>
+</g>
+
+<!-- vault-agent -->
+<g class="node-g" id="ng-vault" data-nid="vault" onclick="inspect('vault')">
+  <rect id="nr-vault" class="node-rect s-inactive" x="320" y="142" width="280" height="50" rx="8"/>
+  <text x="460" y="162" class="node-label">vault-agent</text>
+  <text x="460" y="178" class="node-sub">credential sync · sidecar push</text>
+</g>
+
+<!-- pod group label -->
+<text x="460" y="240" text-anchor="middle" fill="#30363d" font-size="9" font-family="Courier New,monospace" letter-spacing="1">API PODS  (3 / 5 COMPROMISED)</text>
+
+<!-- pod-1  healthy -->
+<g class="node-g" id="ng-pod1" data-nid="pod1" onclick="inspect('pod1')">
+  <circle id="nr-pod1" class="node-circ s-inactive" cx="188" cy="284" r="34"/>
+  <text x="188" y="280" class="node-label" font-size="10">api-pod</text>
+  <text x="188" y="294" class="node-sub">pod-1</text>
+</g>
+
+<!-- pod-2  failing -->
+<g class="node-g" id="ng-pod2" data-nid="pod2" onclick="inspect('pod2')">
+  <circle id="nr-pod2" class="node-circ s-inactive" cx="320" cy="284" r="34"/>
+  <text x="320" y="280" class="node-label" font-size="10">api-pod</text>
+  <text x="320" y="294" class="node-sub">pod-2</text>
+</g>
+
+<!-- pod-3  failing -->
+<g class="node-g" id="ng-pod3" data-nid="pod3" onclick="inspect('pod3')">
+  <circle id="nr-pod3" class="node-circ s-inactive" cx="460" cy="284" r="34"/>
+  <text x="460" y="280" class="node-label" font-size="10">api-pod</text>
+  <text x="460" y="294" class="node-sub">pod-3</text>
+</g>
+
+<!-- pod-4  failing -->
+<g class="node-g" id="ng-pod4" data-nid="pod4" onclick="inspect('pod4')">
+  <circle id="nr-pod4" class="node-circ s-inactive" cx="600" cy="284" r="34"/>
+  <text x="600" y="280" class="node-label" font-size="10">api-pod</text>
+  <text x="600" y="294" class="node-sub">pod-4</text>
+</g>
+
+<!-- pod-5  healthy -->
+<g class="node-g" id="ng-pod5" data-nid="pod5" onclick="inspect('pod5')">
+  <circle id="nr-pod5" class="node-circ s-inactive" cx="732" cy="284" r="34"/>
+  <text x="732" y="280" class="node-label" font-size="10">api-pod</text>
+  <text x="732" y="294" class="node-sub">pod-5</text>
+</g>
+
+<!-- pg-primary -->
+<g class="node-g" id="ng-pg" data-nid="pg" onclick="inspect('pg')">
+  <rect id="nr-pg" class="node-rect s-inactive" x="320" y="366" width="280" height="50" rx="8"/>
+  <text x="460" y="386" class="node-label">pg-primary</text>
+  <text x="460" y="402" class="node-sub">PostgreSQL · svc_api_prod</text>
+</g>
+
+<!-- api-gateway -->
+<g class="node-g" id="ng-gw" data-nid="gw" onclick="inspect('gw')">
+  <rect id="nr-gw" class="node-rect s-inactive" x="320" y="464" width="280" height="50" rx="8"/>
+  <text x="460" y="484" class="node-label">api-gateway</text>
+  <text x="460" y="500" class="node-sub">circuit breaker · /v2/*</text>
+</g>
+
+<!-- redis-cluster -->
+<g class="node-g" id="ng-redis" data-nid="redis" onclick="inspect('redis')">
+  <rect id="nr-redis" class="node-rect s-inactive" x="320" y="574" width="280" height="50" rx="8"/>
+  <text x="460" y="594" class="node-label">redis-cluster</text>
+  <text x="460" y="610" class="node-sub">write-behind sync · dirty-key queue</text>
+</g>
+
+</svg>
+</div><!-- /dag-wrap -->
+
+<!-- ═══════════════════════════ RIGHT PANEL ═══════════════════════ -->
+<div id="panel">
+
+  <!-- Inspector -->
+  <div class="card">
+    <h3>Node Inspector</h3>
+    <div id="insp"><span style="color:#30363d;font-size:11px">Click any node to inspect</span></div>
+  </div>
+
+  <!-- Simulation controls -->
+  <div class="card">
+    <h3>Simulation</h3>
+    <button class="btn btn-blue"   id="btn-cas"  onclick="startCascade()">▶ Run Cascade</button>
+    <button class="btn btn-purple" id="btn-adv"  onclick="toggleAdv()">◈ Adversarial Mode: OFF</button>
+    <button class="btn btn-grey"   id="btn-rst"  onclick="resetAll()">↺ Reset</button>
+  </div>
+
+  <!-- Remediation actions -->
+  <div class="card">
+    <h3>Remediation Actions</h3>
+    <button class="btn btn-green"  id="btn-rot"  onclick="act('rotate_db_credentials')"  disabled>rotate_db_credentials  <span class="tag">0.999</span></button>
+    <button class="btn btn-red"    id="btn-rol"  onclick="act('rollback_deployment')"    disabled>rollback_deployment     <span class="tag">0.001</span></button>
+    <button class="btn btn-amber"  id="btn-scl"  onclick="act('scale_infrastructure')"  disabled>scale_infrastructure    <span class="tag">0.001</span></button>
+    <button class="btn btn-red"    id="btn-flu"  onclick="act('flush_redis_cache')"      disabled>flush_redis_cache       <span class="tag">0.001</span></button>
+  </div>
+
+  <!-- Timeline -->
+  <div class="card">
+    <h3>Event Timeline</h3>
+    <div id="tl-list">
+      <div class="tl-row"><div class="tl-dot" id="td1"></div><div class="tl-text">04:59:58 — cron job started</div></div>
+      <div class="tl-row"><div class="tl-dot" id="td2"></div><div class="tl-text">05:00:01 — vault creds generated</div></div>
+      <div class="tl-row"><div class="tl-dot" id="td3"></div><div class="tl-text">05:00:03 — sidecar retry 1/3</div></div>
+      <div class="tl-row"><div class="tl-dot" id="td4"></div><div class="tl-text">05:00:09 — propagation FAILED</div></div>
+      <div class="tl-row"><div class="tl-dot" id="td5"></div><div class="tl-text">05:00:11 — DB auth failures</div></div>
+      <div class="tl-row"><div class="tl-dot" id="td6"></div><div class="tl-text">05:00:14 — circuit breaker OPEN</div></div>
+      <div class="tl-row"><div class="tl-dot" id="td7"></div><div class="tl-text">05:00:20 — Redis OOM warning</div></div>
+    </div>
+  </div>
+
+</div><!-- /panel -->
+</main>
+
+<footer>Incident-Response-Detective · task_hard · Hackathon 2026</footer>
+
+<script>
+// ── Data ──────────────────────────────────────────────────────────────────────
+const NODES = {
+  cron:{
+    name:'cron-scheduler',
+    idle:'Idle. No jobs scheduled.',
+    warn:'Scheduled job db-credential-rotate started. Rotation ID: CR-4491.',
+    fail:'Credential rotation job triggered vault sidecar sync. Awaiting propagation.',
+    lvl:'warn', healthy:false
+  },
+  vault:{
+    name:'vault-agent',
+    idle:'Credentials current. All sidecars synced.',
+    warn:'config-sync sidecar on pods api-{2,4,5} not responding. Retry 1/3.',
+    fail:'Credential propagation FAILED after 3 retries. 3/5 pods still hold stale credentials. Old credentials now EXPIRED in pg-primary.',
+    lvl:'error', healthy:false
+  },
+  pod1:{
+    name:'api-pod-1',
+    idle:'Pod idle.',
+    warn:'Credential push received — syncing.',
+    fail:'Credentials synced successfully. Pod healthy. No auth errors.',
+    lvl:'info', healthy:true
+  },
+  pod2:{
+    name:'api-pod-2',
+    idle:'Pod idle.',
+    warn:'config-sync sidecar not responding to credential push.',
+    fail:'FATAL: password authentication failed for user \'svc_api_prod\'. Running stale credentials. Connection refused by pg-primary.',
+    lvl:'error', healthy:false
+  },
+  pod3:{
+    name:'api-pod-3',
+    idle:'Pod idle.',
+    warn:'config-sync sidecar not responding to credential push.',
+    fail:'FATAL: password authentication failed for user \'svc_api_prod\'. Running stale credentials. Connection refused by pg-primary.',
+    lvl:'error', healthy:false
+  },
+  pod4:{
+    name:'api-pod-4',
+    idle:'Pod idle.',
+    warn:'config-sync sidecar not responding to credential push.',
+    fail:'FATAL: password authentication failed for user \'svc_api_prod\'. Running stale credentials. Connection refused by pg-primary.',
+    lvl:'error', healthy:false
+  },
+  pod5:{
+    name:'api-pod-5',
+    idle:'Pod idle.',
+    warn:'Credential push received — syncing.',
+    fail:'Credentials synced successfully. Pod healthy. No auth errors.',
+    lvl:'info', healthy:true
+  },
+  pg:{
+    name:'pg-primary',
+    idle:'Database healthy. All connections nominal.',
+    warn:'Auth failure rate rising. Checking credential state.',
+    fail:'Multiple services report FATAL auth failures for svc_api_prod. Stale credentials on 3 pods expired. Connection pool exhausted for affected pods.',
+    lvl:'error', healthy:false
+  },
+  gw:{
+    name:'api-gateway',
+    idle:'All upstream targets healthy.',
+    warn:'Upstream pool degrading — some pods returning errors.',
+    fail:'No healthy upstream targets for /v2/*. Circuit breaker OPEN. 503 Service Unavailable — all backends down.',
+    lvl:'error', healthy:false
+  },
+  redis:{
+    name:'redis-cluster',
+    idle:'Cache healthy. Write-behind sync nominal.',
+    warn:'Write-behind sync to pg-primary FAILED. Dirty key queue: 22,847 keys. OOM warning — approaching maxmemory. Redis is a downstream VICTIM — do not flush.',
+    fail:'Write-behind sync to pg-primary FAILED. Dirty key queue: 22,847 keys. OOM warning — approaching maxmemory. Redis is a downstream VICTIM — do not flush.',
+    lvl:'warn', healthy:false
+  }
+};
+
+// node id → SVG shape element id
+const SHAPE = {
+  cron:'nr-cron',vault:'nr-vault',
+  pod1:'nr-pod1',pod2:'nr-pod2',pod3:'nr-pod3',pod4:'nr-pod4',pod5:'nr-pod5',
+  pg:'nr-pg',gw:'nr-gw',redis:'nr-redis'
+};
+
+// current visual state per node
+const nst = {};
+Object.keys(SHAPE).forEach(id=>nst[id]='inactive');
+
+let running=false, done=false, advOn=false, acted=false;
+
+// ── Node state helpers ────────────────────────────────────────────────────────
+function setNode(id, st){
+  nst[id]=st;
+  const el=document.getElementById(SHAPE[id]);
+  if(!el) return;
+  // strip all state classes
+  el.classList.remove('s-inactive','s-healthy','s-warning','s-failing','s-recovered','pulse-red','pulse-amb');
+  el.removeAttribute('filter');
+  el.classList.add('s-'+st);
+  if(st==='failing'){
+    el.setAttribute('filter','url(#glow-r)');
+    el.classList.add('pulse-red');
+  } else if(st==='warning'){
+    el.classList.add('pulse-amb');
+  } else if(st==='recovered'){
+    el.setAttribute('filter','url(#glow-g)');
+  }
+}
+
+function setEdge(id, st){
+  const el=document.getElementById(id);
+  if(!el) return;
+  el.className.baseVal='edge'+(st?' e-'+st:'');
+  const markers={fail:'arr-fail',ok:'arr-ok',warn:'arr-warn'};
+  el.setAttribute('marker-end','url(#'+(markers[st]||'arr')+')');
+}
+
+function setTL(n, st){
+  const el=document.getElementById('td'+n);
+  if(el) el.className='tl-dot'+(st?' d-'+st:'');
+}
+
+// ── Cascade ───────────────────────────────────────────────────────────────────
+function startCascade(){
+  if(running) return;
+  resetAll(true);
+  running=true;
+  document.getElementById('btn-cas').disabled=true;
+
+  const seq=[
+    [0,    ()=>{ setNode('cron','warning'); setTL(1,'warn'); }],
+    [700,  ()=>{ setEdge('e-cv','warn'); setNode('vault','warning'); setTL(2,'warn'); }],
+    [1600, ()=>{
+      // pods 1 & 5 sync ok
+      setEdge('e-vp1','ok'); setNode('pod1','healthy');
+      setEdge('e-vp5','ok'); setNode('pod5','healthy');
+      setTL(3,'warn');
+    }],
+    [2500, ()=>{
+      // pods 2,3,4 fail
+      ['e-vp2','e-vp3','e-vp4'].forEach(e=>setEdge(e,'fail'));
+      setNode('pod2','failing'); setNode('pod3','failing'); setNode('pod4','failing');
+      setNode('vault','failing'); setEdge('e-cv','fail');
+      setNode('cron','warning');
+      setTL(4,'fail');
+    }],
+    [3500, ()=>{
+      // pg auth failures cascade in from bad pods
+      setEdge('e-p2g','fail'); setEdge('e-p3g','fail'); setEdge('e-p4g','fail');
+      setEdge('e-p1g','ok');   setEdge('e-p5g','ok');
+      setNode('pg','failing');
+      setTL(5,'fail');
+    }],
+    [4500, ()=>{
+      setEdge('e-gg','fail'); setNode('gw','failing');
+      setTL(6,'fail');
+    }],
+    [5300, ()=>{
+      setEdge('e-gr','warn'); setNode('redis','warning');
+      setTL(7,'warn');
+      running=false; done=true;
+      enableActions();
+    }]
+  ];
+
+  seq.forEach(([t,fn])=>setTimeout(fn,t));
+}
+
+function enableActions(){
+  ['btn-rot','btn-rol','btn-scl','btn-flu'].forEach(id=>{
+    document.getElementById(id).disabled=false;
+  });
+}
+
+// ── Actions ───────────────────────────────────────────────────────────────────
+function act(action){
+  if(acted) return;
+  acted=true;
+  ['btn-rot','btn-rol','btn-scl','btn-flu'].forEach(id=>document.getElementById(id).disabled=true);
+
+  const badge=document.getElementById('score-badge');
+
+  if(action==='rotate_db_credentials'){
+    badge.textContent='rotate_db_credentials → score: 0.999  ✓';
+    badge.className='score-good';
+    recoverAll();
+  } else {
+    const labels={
+      rollback_deployment:'rollback_deployment → score: 0.001  ✗',
+      scale_infrastructure:'scale_infrastructure → score: 0.001  ✗',
+      flush_redis_cache:'flush_redis_cache → score: 0.001  ✗'
+    };
+    badge.textContent=labels[action];
+    badge.className='score-bad';
+    wrongFlash();
+  }
+}
+
+function recoverAll(){
+  const all=['cron','vault','pod1','pod2','pod3','pod4','pod5','pg','gw','redis'];
+  all.forEach((id,i)=>setTimeout(()=>setNode(id,'recovered'),i*100));
+  const edges=['e-cv','e-vp1','e-vp2','e-vp3','e-vp4','e-vp5','e-p1g','e-p2g','e-p3g','e-p4g','e-p5g','e-gg','e-gr'];
+  setTimeout(()=>edges.forEach(e=>setEdge(e,'ok')), all.length*100+100);
+}
+
+function wrongFlash(){
+  ['nr-vault','nr-pod2','nr-pod3','nr-pod4','nr-pg','nr-gw'].forEach(id=>{
+    const el=document.getElementById(id);
+    if(!el) return;
+    let t=0;
+    [0,200,400,600].forEach(d=>setTimeout(()=>{el.style.opacity=t++%2?'1':'0.25'},d));
+    setTimeout(()=>el.style.opacity='1',700);
+  });
+}
+
+// ── Adversarial mode ──────────────────────────────────────────────────────────
+function toggleAdv(){
+  advOn=!advOn;
+  document.getElementById('adv-group').style.display=advOn?'block':'none';
+  const btn=document.getElementById('btn-adv');
+  btn.textContent='◈ Adversarial Mode: '+(advOn?'ON':'OFF');
+  if(advOn) btn.classList.add('adv-on'); else btn.classList.remove('adv-on');
+}
+
+// ── Inspector ─────────────────────────────────────────────────────────────────
+function inspect(id){
+  const d=NODES[id], st=nst[id];
+  if(!d) return;
+
+  let msg, pill, logCls;
+  if(st==='inactive'){
+    msg=d.idle; pill='inactive'; logCls='log-idle';
+  } else if(st==='healthy'){
+    msg=d.healthy?d.fail:d.idle; pill='healthy'; logCls='log-info';
+  } else if(st==='recovered'){
+    msg='Service recovered. Credentials refreshed and propagated. All connections healthy.';
+    pill='recovered'; logCls='log-info';
+  } else if(st==='warning'){
+    msg=d.warn; pill='warning'; logCls='log-warn';
+  } else {
+    msg=d.fail; pill='failing'; logCls='log-'+(d.lvl==='error'?'error':d.lvl==='warn'?'warn':'info');
+  }
+
+  const pillLabel={inactive:'IDLE',healthy:'HEALTHY',warning:'WARNING',failing:'FAILING',recovered:'RECOVERED'};
+
+  document.getElementById('insp').innerHTML=
+    `<div class="insp-name">${d.name}</div>`+
+    `<div class="insp-pill pill-${pill}">${pillLabel[pill]}</div>`+
+    `<div class="insp-log ${logCls}">${msg}</div>`;
+}
+
+// ── Reset ─────────────────────────────────────────────────────────────────────
+function resetAll(silent){
+  running=false; done=false; acted=false;
+
+  Object.keys(SHAPE).forEach(id=>setNode(id,'inactive'));
+
+  const edges=['e-cv','e-vp1','e-vp2','e-vp3','e-vp4','e-vp5','e-p1g','e-p2g','e-p3g','e-p4g','e-p5g','e-gg','e-gr'];
+  edges.forEach(e=>setEdge(e,''));
+
+  ['btn-rot','btn-rol','btn-scl','btn-flu'].forEach(id=>document.getElementById(id).disabled=true);
+  document.getElementById('btn-cas').disabled=false;
+
+  for(let i=1;i<=7;i++) setTL(i,'');
+
+  const badge=document.getElementById('score-badge');
+  badge.textContent='No action taken'; badge.className='';
+
+  if(!silent)
+    document.getElementById('insp').innerHTML='<span style="color:#30363d;font-size:11px">Click any node to inspect</span>';
+}
+</script>
+</body>
+</html>
