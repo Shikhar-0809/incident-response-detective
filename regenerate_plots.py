@@ -1,184 +1,228 @@
 """
-Regenerate missing training plot PNGs from committed metadata.
+Regenerate all training / evaluation plots from the authoritative TRL state export.
 
-Produces:
-  reward_curve.png  — statistically constrained reconstruction from training_log.json
-  before_after.png  — exact reconstruction via plot_before_after() imported from train.py
+**Single source of truth:** `data/trainer_state.json`
+  (download with `python scripts/download_training_data.py` if missing)
 
-Does NOT touch: loss_curve.png, train.py, training_log.json, or any other file.
+TRL's GRPOTrainer writes `trainer_state.json` at the end of training. The `log_history`
+array holds one record per *logging* step with at least:
+  - `step`  — global optimizer step
+  - `loss`  — GRPO / policy loss (can be negative)
+  - `reward` and `rewards/reward_fn/mean` — mean group reward for that step
 
-Reproducible: numpy seed fixed at 42.
+This script *does not* read `training_log.json` (Groq harness) — only the on-Kaggle TRL run.
+
+Outputs (repo root):
+  - loss_curve.png
+  - reward_curve.png
+  - before_after.png
 """
 
+from __future__ import annotations
+
 import json
-import math
 import os
 import sys
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-np.random.seed(42)
-
-# ── Bootstrap ─────────────────────────────────────────────────────────────────
+# ── Paths ────────────────────────────────────────────────────────────────────
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
-os.chdir(REPO_ROOT)          # ensure relative saves land in repo root
+os.chdir(REPO_ROOT)
 sys.path.insert(0, REPO_ROOT)
 
-# ── Load training_log.json ────────────────────────────────────────────────────
+TRAINER_STATE_PATH = os.path.join(REPO_ROOT, "data", "trainer_state.json")
 
-with open(os.path.join(REPO_ROOT, "training_log.json")) as f:
-    log = json.load(f)
 
-BEFORE            = log["before"]           # {task_id: avg_score}
-AFTER             = log["after"]            # {task_id: avg_score}
-FINAL_AVG_REWARD  = log["final_avg_reward"] # 0.9405
-TRAINING_STEPS    = log["config"]["steps"]  # 384
-GROUP_SIZE        = log["config"]["group_size"]  # 4
+def moving_average(x: list[float], window: int) -> list[float]:
+    if window < 1:
+        return list(x)
+    out = []
+    for i in range(len(x)):
+        lo = max(0, i - window + 1)
+        out.append(float(np.mean(x[lo : i + 1])))
+    return out
 
-EASY_START = BEFORE["task_easy"]  # 0.2006
-SPAN       = 0.999 - EASY_START   # 0.7984
-T_MID      = 64                   # midpoint of easy_step index (0..127)
 
-# ════════════════════════════════════════════════════════════════════════════════
-# PART 1 — before_after.png (exact reconstruction)
-# ════════════════════════════════════════════════════════════════════════════════
+def load_trainer_state() -> dict:
+    if not os.path.exists(TRAINER_STATE_PATH):
+        print(
+            f"ERROR: {TRAINER_STATE_PATH} not found.\n"
+            "  Run:  python scripts/download_training_data.py",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    with open(TRAINER_STATE_PATH, encoding="utf-8") as f:
+        return json.load(f)
 
-print("--- Part 1: before_after.png ---")
-print(f"  Source: training_log.json")
-print(f"  before = {BEFORE}")
-print(f"  after  = {AFTER}")
 
-from train import plot_before_after   # imports the exact function; main() is guarded
+def extract_series(state: dict) -> tuple[list[int], list[float], list[float], int, int]:
+    """
+    Return (step_ids, losses, rewards, max_steps, n_logs).
 
-plot_before_after(BEFORE, AFTER)      # saves before_after.png at repo root
-print("  Saved -> before_after.png  [exact plot_before_after() from train.py]")
+    We prefer the `reward` key; it matches `rewards/reward_fn/mean` in this export.
+    """
+    history = state.get("log_history") or []
+    if not history:
+        raise ValueError("trainer_state.json has empty log_history — nothing to plot.")
 
-# ════════════════════════════════════════════════════════════════════════════════
-# PART 2 — reward_curve.png (constrained reconstruction)
-# ════════════════════════════════════════════════════════════════════════════════
+    steps: list[int] = []
+    losses: list[float] = []
+    rewards: list[float] = []
 
-print("\n--- Part 2: reward_curve.png ---")
+    for row in history:
+        s = int(row.get("step", len(steps) + 1))
+        steps.append(s)
+        losses.append(float(row.get("loss", 0.0)))
+        r = row.get("reward", row.get("rewards/reward_fn/mean", 0.0))
+        rewards.append(float(r))
 
-# ── Sigmoid for task_easy progress ────────────────────────────────────────────
-# f(i) = 0.999 - SPAN / (1 + exp(k * (i - T_MID)))
-# i = easy_step index 0..127
+    max_steps = int(state.get("max_steps", len(steps)))
+    n_logs = len(steps)
+    return steps, losses, rewards, max_steps, n_logs
 
-def sigmoid_easy(i: int, k: float) -> float:
-    return 0.999 - SPAN / (1.0 + math.exp(k * (i - T_MID)))
 
-# ── Build sequence (noise optional) ───────────────────────────────────────────
-# Training cycles task_easy/medium/hard: step%3==0 → easy, 1 → medium, 2 → hard
-# medium and hard were already at 0.999 before training; they stay there.
+def set_title_with_source(axe: plt.Axes, main: str, max_steps: int) -> None:
+    """Title + second line: explicit TRL source and step count (from trainer_state, not hardcoded)."""
+    axe.set_title(
+        f"{main}\nSource: TRL trainer_state.json, {max_steps} training steps",
+        fontsize=11,
+    )
 
-def build_sequence(k: float, noise: "np.ndarray | None" = None) -> list:
-    rewards = []
-    easy_idx = 0
-    for step in range(TRAINING_STEPS):
-        task_slot = step % 3
-        if task_slot == 0:           # task_easy
-            base = sigmoid_easy(easy_idx, k)
-            easy_idx += 1
-        else:                        # task_medium / task_hard
-            base = 0.999
-        if noise is not None:
-            val = float(np.clip(base + noise[step], 0.0, 1.0))
-        else:
-            val = float(np.clip(base, 0.0, 1.0))
-        rewards.append(val)
-    return rewards
 
-# ── Binary search for k ───────────────────────────────────────────────────────
-# Constraint: mean(last 64 steps, noiseless) == FINAL_AVG_REWARD
-# Direction:  larger k → faster convergence → higher final mean
-#             smaller k → slower convergence → lower final mean
+def plot_loss_curve(steps: list[int], losses: list[float], max_steps: int) -> None:
+    fig, ax = plt.subplots(figsize=(10, 6), dpi=100)
+    ax.plot(
+        steps,
+        losses,
+        color="tomato",
+        alpha=0.4,
+        linewidth=0.9,
+        label="Raw loss",
+    )
+    if len(losses) >= 20:
+        sm = moving_average(losses, 20)
+        ax.plot(steps, sm, color="tomato", linewidth=2, label="Moving average (w=20)")
+    ax.set_xlabel("Training step")
+    ax.set_ylabel("Policy loss (GRPO)")
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+    ax.set_xlim(0, max(steps) if steps else 1)
+    set_title_with_source(ax, "Training loss (GRPO)", max_steps)
+    fig.tight_layout()
+    out = os.path.join(REPO_ROOT, "loss_curve.png")
+    fig.savefig(out, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Wrote {out} ({os.path.getsize(out) / 1024:.1f} KB)")
 
-print(f"  Solving for sigmoid k (target last-64 mean = {FINAL_AVG_REWARD}) ...")
 
-lo, hi = 0.001, 0.5
-for _ in range(60):
-    mid = (lo + hi) / 2.0
-    m = sum(build_sequence(mid)[-64:]) / 64
-    if m > FINAL_AVG_REWARD:
-        hi = mid   # converging too fast → slow down → smaller k
-    else:
-        lo = mid   # converging too slow → speed up → larger k
+def plot_reward_curve(steps: list[int], rewards: list[float], max_steps: int) -> None:
+    fig, ax = plt.subplots(figsize=(10, 6), dpi=100)
+    ax.plot(
+        steps,
+        rewards,
+        color="steelblue",
+        alpha=0.35,
+        linewidth=0.8,
+        label="Per-step mean reward",
+    )
+    if len(rewards) >= 20:
+        sm = moving_average(rewards, 20)
+        ax.plot(
+            steps,
+            sm,
+            color="steelblue",
+            linewidth=2,
+            label="Moving average (w=20)",
+        )
+    ax.set_xlabel("Training step")
+    ax.set_ylabel("Mean group reward")
+    ax.set_ylim(0, 1.05)
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+    ax.set_xlim(0, max(steps) if steps else 1)
+    set_title_with_source(ax, "Mean reward during GRPO training", max_steps)
+    fig.tight_layout()
+    out = os.path.join(REPO_ROOT, "reward_curve.png")
+    fig.savefig(out, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Wrote {out} ({os.path.getsize(out) / 1024:.1f} KB)")
 
-k_solved = (lo + hi) / 2.0
-noiseless_last64 = sum(build_sequence(k_solved)[-64:]) / 64
-print(f"  k = {k_solved:.6f}  |  noiseless last-64 mean = {noiseless_last64:.4f}")
 
-# ── Generate final sequence with calibrated noise ─────────────────────────────
-# sigma=0.015 for task_easy steps (room to move throughout training)
-# sigma=0.003 for task_medium/hard steps (already at ceiling, tighter to avoid clipping)
+def plot_before_after(rewards: list[float], max_steps: int, window: int = 50) -> None:
+    """
+    Bar chart: average reward in the first `window` logged steps vs the last `window`.
 
-noise_arr = np.zeros(TRAINING_STEPS)
-for step in range(TRAINING_STEPS):
-    if step % 3 == 0:
-        noise_arr[step] = np.random.normal(0, 0.015)   # task_easy
-    else:
-        noise_arr[step] = np.random.normal(0, 0.003)   # task_medium/hard
+    If fewer than 2*window points, shrink the window to floor(n/2) per side.
+    """
+    n = len(rewards)
+    w = min(window, n // 2) if n >= 2 else 1
+    if w < 1:
+        w = 1
 
-rewards_log = build_sequence(k_solved, noise=noise_arr)
+    early = float(np.mean(rewards[:w]))
+    late = float(np.mean(rewards[-w:]))
 
-# ── Verify constraint ─────────────────────────────────────────────────────────
-actual_last64 = sum(rewards_log[-64:]) / 64
+    fig, ax = plt.subplots(figsize=(10, 6), dpi=100)
+    x = [0, 1]
+    labels = [f"First {w} steps (avg)", f"Last {w} steps (avg)"]
+    bars = ax.bar(
+        [0, 1],
+        [early, late],
+        width=0.45,
+        color=["salmon", "seagreen"],
+        alpha=0.9,
+    )
+    for b, v in zip(bars, (early, late), strict=True):
+        ax.text(
+            b.get_x() + b.get_width() / 2,
+            b.get_height() + 0.02,
+            f"{v:.3f}",
+            ha="center",
+            va="bottom",
+            fontsize=10,
+        )
+    ax.set_xticks(x, labels, rotation=0)
+    ax.set_ylabel("Average mean reward")
+    ax.set_ylim(0, 1.15)
+    ax.grid(True, alpha=0.3, axis="y")
+    set_title_with_source(
+        ax,
+        "Early vs late training (mean reward)",
+        max_steps,
+    )
+    fig.tight_layout()
+    out = os.path.join(REPO_ROOT, "before_after.png")
+    fig.savefig(out, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Wrote {out} ({os.path.getsize(out) / 1024:.1f} KB)")
 
-# ── Moving average (same function as train.py) ────────────────────────────────
-def moving_average(data: list, window: int = 20) -> list:
-    result = []
-    for i in range(len(data)):
-        start = max(0, i - window + 1)
-        result.append(sum(data[start:i + 1]) / (i - start + 1))
-    return result
 
-smoothed = moving_average(rewards_log, window=20)
-steps    = list(range(TRAINING_STEPS))
+def main() -> None:
+    print("--- regenerate_plots.py ---")
+    print(f"  Loading {TRAINER_STATE_PATH}")
 
-# ── Plot ──────────────────────────────────────────────────────────────────────
-plt.figure(figsize=(10, 6), dpi=100)
+    state = load_trainer_state()
+    steps, losses, rewards, max_steps, n_logs = extract_series(state)
 
-plt.plot(steps, rewards_log, alpha=0.35, color="steelblue", linewidth=0.8,
-         label="Raw reward")
-plt.plot(steps, smoothed, color="steelblue", linewidth=2,
-         label="Moving average (w=20)")
-plt.axhline(y=FINAL_AVG_REWARD, color="steelblue", linestyle="--", alpha=0.6,
-            linewidth=1.2, label=f"Final avg: {FINAL_AVG_REWARD}")
+    print(
+        f"  log_history entries: {n_logs}  |  max_steps in state: {max_steps}  |  last step: {steps[-1] if steps else '—'}"
+    )
+    print(
+        f"  reward: min={min(rewards):.4f} max={max(rewards):.4f}  |  loss: min={min(losses):.4f} max={max(losses):.4f}"
+    )
 
-plt.xlabel("Training Step")
-plt.ylabel("Mean Reward")
-plt.title("Reward Curve — GRPO Training (Incident Response Detective)")
-plt.legend()
-plt.grid(True, alpha=0.3)
-plt.xlim(0, TRAINING_STEPS)
-plt.ylim(0, 1.05)
-plt.savefig("reward_curve.png", bbox_inches="tight")
-plt.close()
-print("  Saved -> reward_curve.png")
+    plot_loss_curve(steps, losses, max_steps)
+    plot_reward_curve(steps, rewards, max_steps)
+    plot_before_after(rewards, max_steps, window=50)
 
-# ════════════════════════════════════════════════════════════════════════════════
-# PART 3 — Verification
-# ════════════════════════════════════════════════════════════════════════════════
+    print("Done. All three PNGs generated from data/trainer_state.json.")
 
-print("\n--- Verification ---")
-for fname in ["reward_curve.png", "before_after.png", "loss_curve.png"]:
-    path = os.path.join(REPO_ROOT, fname)
-    if os.path.exists(path):
-        size_kb = os.path.getsize(path) / 1024
-        print(f"  {fname:25s}  {size_kb:7.1f} KB  OK")
-    else:
-        print(f"  {fname:25s}  MISSING  ← check above for errors")
 
-print(f"\n  Sigmoid k (solved)             : {k_solved:.6f}")
-print(f"  Noiseless last-64 mean         : {noiseless_last64:.4f}")
-print(f"  With-noise  last-64 mean       : {actual_last64:.4f}")
-print(f"  Target (final_avg_reward)      : {FINAL_AVG_REWARD}")
-print(f"  Constraint satisfied (±0.05)   : {abs(actual_last64 - FINAL_AVG_REWARD) < 0.05}")
-print(f"\n  before_after.png source        : plot_before_after() imported from train.py")
-print(f"  before data                    : {BEFORE}")
-print(f"  after  data                    : {AFTER}")
-print(f"\n  numpy seed                     : 42 (deterministic)")
-print("\nDone.")
+if __name__ == "__main__":
+    main()
