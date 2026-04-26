@@ -23,6 +23,8 @@ import sys
 import matplotlib.pyplot as plt
 import requests
 
+DRY_RUN = "--dry-run" in sys.argv
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from environment import IncidentResponseEnvironment
@@ -243,6 +245,17 @@ def main() -> None:
     print(f"Group  : {GRPO_GROUP_SIZE} completions/prompt")
     print(f"Mode   : adversarial-only")
     print(f"Key    : {'set' if GROQ_API_KEY else 'NOT SET — deterministic fallback'}")
+    if DRY_RUN:
+        print("DRY RUN: Verifying environment setup only.")
+        env = IncidentResponseEnvironment()
+        for task_id in TASK_IDS:
+            ep_id, obs = env.reset(task_id=task_id, adversarial=True)
+            print(f"  reset({task_id}) -> episode_id={ep_id[:8]}... logs={len(obs['logs'])} chat={len(obs['chat_history'])}")
+            env.step(ep_id, {"action": ACTIONS[0], "evidence": 0})
+            grade = env.grade(ep_id)
+            print(f"  step+grade ok -> score={grade['score']}")
+        print("DRY RUN complete. Environment is functional.")
+        return
 
     # 1. Baseline evaluation BEFORE training (required for before_after.png)
     before_scores = evaluate("before training")
