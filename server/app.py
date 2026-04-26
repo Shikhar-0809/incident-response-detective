@@ -3,8 +3,9 @@
 import os
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
-from environment import IncidentResponseEnvironment
+from server.environment import IncidentResponseEnvironment
 
 app = FastAPI(
     title="Incident-Response-Detective",
@@ -31,9 +32,14 @@ class GradeRequest(BaseModel):
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
+@app.get("/")
+def root():
+    return RedirectResponse(url="/docs")
+
+
 @app.get("/health")
 def health():
-    return {"status": "healthy", "service": "incident-response-detective"}
+    return {"status": "healthy", "environment": "Incident-Response-Detective"}
 
 
 @app.get("/tasks")

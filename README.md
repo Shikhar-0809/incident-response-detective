@@ -122,17 +122,23 @@ This is the specific bias the environment is designed to train against: **agents
 
 ![Reward Curve](reward_curve.png)
 
-The reward curve shows training on adversarial episodes exclusively. Starting from ~0.20 mean reward (agent is fooled by adversarial pressure approximately 80% of the time), reward stabilizes toward 0.999 as the policy learns to prioritize log evidence and runbook constraints over social chat signals.
+*Source: training_log.json (Groq API harness with llama-3.1-8b-instant, 384 evaluation steps) — Qwen GRPO training results documented in Kaggle notebook*
+
+The reward curve is from the same **384-step Groq harness** as `training_log.json` (not the 400-step Kaggle Qwen run). It shows evaluation on adversarial episodes exclusively. Starting from ~0.20 mean reward (agent is fooled by adversarial pressure approximately 80% of the time), reward stabilizes toward 0.999 as measured by that harness.
 
 ### Loss Curve
 
 ![Policy Loss Curve](loss_curve.png)
 
-GRPO surrogate policy loss over 384 training steps (group size = 4 completions per prompt). The loss reflects advantage-normalized policy gradient within each group — negative loss indicates the policy is concentrating probability mass on high-reward completions.
+*Source: training_log.json (Groq API harness with llama-3.1-8b-instant, 384 evaluation steps) — Qwen GRPO training results documented in Kaggle notebook*
+
+GRPO surrogate policy loss over **384** main-loop iterations in the **Groq harness** (`train.py`, group size = 4 completions per prompt) — *not* the Kaggle Qwen step count. The loss reflects advantage-normalized policy gradient within each group — negative loss indicates the policy is concentrating probability mass on high-reward completions.
 
 ### Before vs. After
 
 ![Before After Comparison](before_after.png)
+
+*Comparison table from harness evaluation — full Qwen training details in Kaggle notebook (400 steps)*
 
 | Task | Before Training | After Training | Improvement |
 |---|---|---|---|
@@ -151,7 +157,12 @@ The repository contains two training artifacts:
 1. **train.py** — Environment evaluation harness that tests agent performance using the Groq API (`llama-3.1-8b-instant`). Computes GRPO-style loss for analysis but does not update model weights.
 2. **Kaggle Notebook** — Full GRPO fine-tuning pipeline using Qwen 2.5-0.5B-Instruct with LoRA. The trained adapter is available at https://huggingface.co/Shiggii/qwen-incident-response-grpo
 
-The `training_log.json` and plots in this repo are from the evaluation harness (Groq API testing). The Kaggle notebook contains the production training run with actual weight updates (400 steps, 0.201 → 0.999 reward improvement on adversarial easy mode).
+**Step counts (do not conflate the two):**
+
+- **384** = number of main-loop **evaluation steps in `train.py`** (Groq API harness, `llama-3.1-8b-instant`). Drives `training_log.json` and the `.png` plots in this repo.
+- **400** = number of **optimizer steps in the Kaggle notebook** (Qwen 2.5-0.5B-Instruct + LoRA, real weight updates). That run reports **0.201 → 0.999** reward on adversarial easy; see the notebook, not the harness JSON.
+
+The `training_log.json` and embedded plots are from the **Groq harness** only. The Kaggle run is the **production** GRPO fine-tune with the step count above.
 
 Run the evaluation harness:
 
