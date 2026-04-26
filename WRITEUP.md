@@ -30,7 +30,7 @@ The behavioral win is the **0.201 → 0.999** jump on the **adversarial** easy r
 
 ## Try It
 
-- **Hugging Face Space:** [optimusCryme / Incident-Response-Detective](https://huggingface.co/spaces/optimusCryme/Incident-Response-Detective)  
+- **Hugging Face Space:** [Shiggii / incident-response-detective](https://huggingface.co/spaces/Shiggii/incident-response-detective)  
 - **Kaggle notebook (GRPO + LoRA):** [notebookb5136cd284](https://www.kaggle.com/code/shikharkumarsanjay/notebookb5136cd284)  
 - **Trained adapter:** [Shiggii / qwen-incident-response-grpo](https://huggingface.co/Shiggii/qwen-incident-response-grpo)  
 
