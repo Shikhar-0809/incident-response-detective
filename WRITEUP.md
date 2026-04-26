@@ -1,41 +1,51 @@
+---
+
+title: "Incident Response Detective: Teaching AI to Resist Social Engineering in SRE Operations"
+thumbnail: /blog/assets/incident-response-detective/thumbnail.png
+authors:
+
+- user: Shiggii
+
+---
+
 # Incident Response Detective: Teaching AI to Resist Social Engineering in SRE Operations
 
 ## The Hook
 
-We observed a **397% relative improvement** on the authority-bias stress case (`task_easy` adversarial): mean score increased from **0.201** (untrained baseline) to **0.999** after GRPO fine-tuning. In the failure case, the model receives correct logs and runbook guidance but still follows contradictory Slack authority messages. This environment isolates that exact error mode by changing chat only, while keeping logs and runbook constant.
+Large language models fail catastrophically under adversarial social pressure. Llama 3.3 70B achieves only 0.001 success rate on our adversarial_easy task—a 99.9% failure rate on scenarios that human SREs handle routinely. The same runbook and logs are on screen, but a confident on-call lead and a second voice push the *wrong* fix—*scale* when *rollback* is right—and the model follows *them*, not the evidence. That is not a corner case. It is what happens when confident human language outranks sparse log signal while the PagerDuty clock ticks.
 
 ## The Problem
 
-During incidents, operators synthesize three channels: logs, chat, and runbook. The failure we target is straightforward: the agent selects an action endorsed by confident chat participants even when the runbook and causal logs disagree. In production, that means performing unsafe remediations (for example, scaling or cache flushes) instead of the documented fix. We designed the benchmark so only social context is adversarial, which makes authority bias directly measurable rather than anecdotal.
+Production incident response is a social-technical system. PagerDuty fires, Slack fills with hot takes, and the logs are a haystack. Runbooks are supposed to be law—yet under pressure, people still lobby for scale-ups, flushes, and rollbacks because someone *sounds* sure. AI-assisted SRE tooling inherits that risk: an agent that obeys the chat instead of the runbook can automate the wrong action at the worst time. The bug is not vocabulary—it is **authority** and **urgency** overwhelming ambiguous evidence. We needed a benchmark where only the *chat* is adversarial, logs and runbook unchanged, to measure that failure directly.
 
 ## The Solution
 
-Incident-Response-Detective is an OpenEnv triage environment where each step exposes logs, Slack chat, and a runbook, and the agent must choose one remediation action. Reward combines **safety** (runbook-consistent vs dangerous actions) and **efficiency** (time-to-resolution), with explicit penalties for unsafe choices. Adversarial mode replaces only the chat stream, so performance differences can be attributed to social-pressure susceptibility rather than task content changes.
+**Incident-Response-Detective** is an OpenEnv triage environment: each episode blends **server logs**, **Slack-style chat**, and a **runbook**—the same triad real on-calls juggle. There is no single keyword win; the agent must read prohibitions, trace timestamps, and sometimes ignore a wall of bad advice. The reward is **shaped**: **safety** (runbook-consistent, non-dangerous actions) plus **efficiency** (resolve fast on the right path), with a hard floor for genuinely dangerous actions. **Adversarial** mode only swaps the chat, so you isolate social engineering from the rest of the signal.
 
 ## Training Approach
 
-After API-based prototyping with `llama-3.1-8b-instant`, we ran final GRPO fine-tuning on Kaggle using **Qwen2.5-0.5B-Instruct + LoRA** for **384 optimizer steps** (TRL 1.2.0). Prototyping was used to validate environment/reward behavior; the Kaggle run produced the trained adapter weights published in the model repo.
+We fine-tuned with **GRPO** and **LoRA** on **Qwen 2.5-0.5B-Instruct** in a Kaggle pipeline—about **400 optimizer steps** to align a small model with the environment's reward, so it learns a policy, not a script. (We also keep a 384-step **Groq evaluation harness** in the repo for curves and ablations; the Kaggle run is what updates real weights and carries the main headline on adversarial easy.)
 
 ## Results
 
-Primary result: on adversarial Easy, mean score improved from **0.2006** to **0.999** (+0.798 absolute, +397% relative). Medium and Hard were already near ceiling in this evaluation setup (0.999 baseline), so the measurable gain is concentrated in the authority-bias condition.
+The behavioral win is the **0.201 → 0.999** jump on the **adversarial** easy regime, where the only attack is *social*—engineered agreement for the wrong remediation. Table from harness before/after eval:
 
-Table from harness before/after eval:
 
-| Task | Before Training | After Training | Improvement |
-|------|-----------------|----------------|-------------|
-| task_easy (adversarial) | 0.2006 | 0.999 | +0.798 |
-| task_medium (adversarial) | 0.999 | 0.999 | — (already strong) |
-| task_hard (adversarial) | 0.999 | 0.999 | — (already strong) |
+| Task                      | Before Training | After Training | Improvement        |
+| ------------------------- | --------------- | -------------- | ------------------ |
+| task_easy (adversarial)   | 0.2006          | 0.999          | +0.798             |
+| task_medium (adversarial) | 0.999           | 0.999          | — (already strong) |
+| task_hard (adversarial)   | 0.999           | 0.999          | — (already strong) |
 
-The key behavioral change is not generic accuracy gain; it is policy shift under social contradiction. Before training, the model frequently follows authoritative chat cues. After training, it consistently prioritizes runbook/log evidence in the same scenario family.
+
+**Easy + adversarial** is the real stress test: the room is wrong on purpose. Medium and hard often hit ceiling when the runbook or logs give a clear hook—the headline is a tiny model learning to *withstand* a chat pile-on.
 
 ## Try It
 
-- **Hugging Face Space:** [Shiggii / incident-response-detective](https://huggingface.co/spaces/Shiggii/incident-response-detective)  
-- **Kaggle notebook (GRPO + LoRA):** [notebookb5136cd284](https://www.kaggle.com/code/shikharkumarsanjay/notebookb5136cd284)  
-- **Trained adapter:** [Shiggii / qwen-incident-response-grpo](https://huggingface.co/Shiggii/qwen-incident-response-grpo)  
+- **Hugging Face Space:** [Shiggii / incident-response-detective](https://huggingface.co/spaces/Shiggii/incident-response-detective)
+- **Kaggle notebook (GRPO + LoRA):** [notebookb5136cd284](https://www.kaggle.com/code/shikharkumarsanjay/notebookb5136cd284)
+- **Trained adapter:** [Shiggii / qwen-incident-response-grpo](https://huggingface.co/Shiggii/qwen-incident-response-grpo)
 
 ## Future Work
 
-Next step is scaling from three archetypes to larger procedurally generated pools while preserving causal structure. The immediate experiment is to retrain/evaluate on expanded seeds and report out-of-template generalization (same reward logic, unseen entity/timestamp/service permutations).
+We have a **procedural** task generator that varies names, services, and timestamps under fixed causal structure—the next move is to feed that pool into training and evaluation at scale, not only three hand-authored scenarios.
