@@ -1,1 +1,26 @@
 **/__pycache__/
+
+# Python
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+
+# Environment
+.env
+.venv/
+venv/
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# Project-specific
+graphify-out/
+data/raw/
+
+# macOS
+.DS_Store
