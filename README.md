@@ -29,6 +29,8 @@ tags:
 > Real GRPO training was run on Kaggle (Tesla T4 x2, ~50 min) — see the [training notebook](https://www.kaggle.com/code/shikharkumarsanjay/notebookb5136cd284).
 > `train.py` in this repo is the **evaluation harness** used to produce the reward/loss curves below — it does not update model weights.
 > The trained LoRA adapter is published at [Shiggii/qwen-incident-response-grpo](https://huggingface.co/Shiggii/qwen-incident-response-grpo).
+>
+> **Experimental tracking:** Full per-step metrics available in [`trainer_state.json`](https://huggingface.co/Shiggii/qwen-incident-response-grpo/blob/main/trainer_state.json) on the model repo.
 
 ## Motivation
 
