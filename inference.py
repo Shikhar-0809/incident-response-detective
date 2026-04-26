@@ -40,12 +40,16 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # ── Environment Access ────────────────────────────────────────────────────────
 
 def get_env():
-    """Return either an HTTP client or an embedded environment."""
+    """Return either an HTTP client or an embedded environment.
+
+    Embedded mode uses the root-level environment (step(episode_id, action_dict) signature).
+    HTTP mode uses the client which wraps the deployed server.
+    """
     if ENV_BASE_URL:
         from client import IncidentResponseClient
         return IncidentResponseClient(base_url=ENV_BASE_URL), "http"
     else:
-        from server.environment import IncidentResponseEnvironment
+        from environment import IncidentResponseEnvironment
         return IncidentResponseEnvironment(), "embedded"
 
 
