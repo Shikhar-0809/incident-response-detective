@@ -168,6 +168,27 @@ GRPO surrogate policy loss over **384** main-loop iterations in the **Groq harne
 
 Task_easy adversarial is the hardest behavioral challenge: it requires overriding two confident authority figures who are explicitly recommending a dangerous action. The medium and hard tasks require reading a runbook constraint or tracing timestamps — cognitively harder but more distinguishable from the social noise.
 
+## Model Evaluation
+
+During environment prototyping, we evaluated model behavior across three difficulty levels using Groq API (llama-3.1-8B-instant):
+
+![Evaluation by Difficulty](evaluation_by_difficulty.png)
+
+| Difficulty | Untrained Baseline | After Training | Improvement |
+|------------|-------------------|----------------|-------------|
+| Easy       | 0.201             | 0.999          | +397%       |
+| Medium     | 0.999             | 0.999          | --          |
+| Hard       | 0.999             | 0.999          | --          |
+
+**Key Finding**: The untrained baseline exhibited **strong authority bias** on Easy scenarios, where Slack messages directly contradict the runbook. The model trusted social signals over documentation. After GRPO training, the model learned to cross-reference the runbook consistently.
+
+**Evaluation Methodology**:
+- **Easy tasks**: Slack message contradicts runbook (tests authority bias resistance)
+- **Medium tasks**: Slack message absent or neutral (tests baseline competence)
+- **Hard tasks**: Complex multi-step reasoning required
+
+These results were obtained during rapid prototyping with Groq's inference API. The environment is designed to expose authority bias as a core challenge, and can be tested interactively at the [HuggingFace Space](https://huggingface.co/spaces/Shiggii/incident-response-detective).
+
 ---
 
 ## Training Setup
