@@ -1,202 +1,55 @@
-"""Core environment logic for Incident-Response-Detective."""
+"""
+Compatibility wrapper for legacy scripts (train.py, benchmark.py, inference.py).
 
-import uuid
-from models import IncidentAction, IncidentObservation, IncidentState
-from task_definitions import TASKS, ACTIONS, ADVERSARIAL_OVERLAYS, compute_reward
+The canonical OpenEnv-compliant implementation lives in server/environment.py.
+This module keeps old root imports working while exposing an Environment subclass
+to validators that inspect environment.py directly.
+"""
+
+from typing import Any, Optional
+
+from server.environment import IncidentResponseEnvironment as _BaseEnvironment
 
 
-class IncidentResponseEnvironment:
+class IncidentResponseEnvironment(_BaseEnvironment):
     """
-    OpenEnv-compatible environment for incident triage.
-    Implements reset(), step(), state() following the Gymnasium-style API.
+    Compatibility shim for scripts using the legacy root environment API.
+
+    Inherits from the OpenEnv-compliant implementation in server.environment and
+    accepts both call styles:
+    - Legacy: step(episode_id, action_dict)
+    - Legacy keyword: step(episode_id=..., action_dict=...)
+    - OpenEnv: step(action, timeout_s=None, episode_id=...)
     """
 
-    SUPPORTS_CONCURRENT_SESSIONS = True
+    def step(
+        self,
+        episode_id_or_action: Any = None,
+        action_dict: Optional[dict] = None,
+        timeout_s: Optional[float] = None,
+        **kwargs: Any,
+    ) -> dict:
+        """Execute an action using either the legacy or OpenEnv step signature."""
+        episode_id = kwargs.pop("episode_id", None)
 
-    def __init__(self):
-        self._episodes: dict[str, dict] = {}
+        if action_dict is not None:
+            if episode_id is None:
+                if not isinstance(episode_id_or_action, str):
+                    raise TypeError(
+                        "Legacy step() requires step(episode_id, action_dict) "
+                        "or step(episode_id=..., action_dict=...)."
+                    )
+                episode_id = episode_id_or_action
+            return super().step(action_dict, timeout_s=timeout_s, episode_id=episode_id, **kwargs)
 
-    def get_tasks(self) -> list[dict]:
-        return [
-            {
-                "id": t["id"],
-                "name": t["name"],
-                "difficulty": t["difficulty"],
-                "description": t["description"],
-                "max_steps": t["max_steps"],
-            }
-            for t in TASKS.values()
-        ]
+        if isinstance(episode_id_or_action, str):
+            raise TypeError(
+                "Missing action_dict for legacy step(episode_id, action_dict) call."
+            )
 
-    def reset(self, task_id: str = "task_easy", adversarial: bool = False) -> tuple[str, dict]:
-        """Start a new episode. Returns (episode_id, observation_dict)."""
-        if task_id not in TASKS:
-            raise ValueError(f"Unknown task: {task_id}. Choose from: {list(TASKS.keys())}")
-
-        episode_id = str(uuid.uuid4())
-        task = TASKS[task_id]
-        chat_history = (
-            ADVERSARIAL_OVERLAYS[task_id]
-            if adversarial and task_id in ADVERSARIAL_OVERLAYS
-            else task["observation"]["chat_history"]
+        return super().step(
+            episode_id_or_action,
+            timeout_s=timeout_s,
+            episode_id=episode_id,
+            **kwargs,
         )
-
-        self._episodes[episode_id] = {
-            "task_id": task_id,
-            "step_count": 0,
-            "done": False,
-            "resolved": False,
-            "actions_taken": [],
-            "rewards": [],
-            "cumulative_reward": 0.0,
-            "adversarial": adversarial,
-        }
-
-        obs = {
-            "task_id": task_id,
-            "task_name": task["name"],
-            "task_description": task["description"],
-            "logs": task["observation"]["logs"],
-            "chat_history": chat_history,
-            "runbook": task["observation"]["runbook"],
-            "available_actions": ACTIONS,
-            "step": 0,
-            "max_steps": task["max_steps"],
-            "done": False,
-            "score": 0.0,
-            "last_reward": 0.0,
-            "reward_breakdown": {},
-            "feedback": "Episode started. Analyze the observation and choose a remediation action.",
-            "last_action_error": None,
-        }
-        return episode_id, obs
-
-    def step(self, episode_id: str, action_dict: dict) -> dict:
-        """Execute an action. Returns observation dict."""
-        if episode_id not in self._episodes:
-            raise ValueError(f"Unknown episode_id: {episode_id}")
-
-        ep = self._episodes[episode_id]
-        if ep["done"]:
-            raise ValueError("Episode already finished.")
-
-        action_str = action_dict.get("action", "")
-        if action_str not in ACTIONS:
-            # Return error observation without consuming a step
-            task = TASKS[ep["task_id"]]
-            return {
-                "task_id": ep["task_id"],
-                "task_name": task["name"],
-                "task_description": task["description"],
-                "logs": task["observation"]["logs"],
-                "chat_history": task["observation"]["chat_history"],
-                "runbook": task["observation"]["runbook"],
-                "available_actions": ACTIONS,
-                "step": ep["step_count"],
-                "max_steps": task["max_steps"],
-                "done": False,
-                "score": ep["cumulative_reward"],
-                "last_reward": 0.0,
-                "reward_breakdown": {},
-                "feedback": f"Invalid action: {action_str}",
-                "last_action_error": f"Invalid action '{action_str}'. Choose from: {ACTIONS}",
-            }
-
-        ep["step_count"] += 1
-        ep["actions_taken"].append(action_str)
-
-        reward_info = compute_reward(ep["task_id"], action_str, ep["step_count"])
-        task = TASKS[ep["task_id"]]
-
-        # Evidence validation
-        evidence_penalty = 0.0
-        evidence_warning = None
-        evidence = action_dict.get("evidence")
-        if evidence is None:
-            evidence_penalty = 0.1
-            evidence_warning = "No evidence provided. Supply 'evidence': <log_index> to justify your action."
-        else:
-            try:
-                idx = int(evidence)
-                log_count = len(task["observation"]["logs"])
-                if idx < 0 or idx >= log_count:
-                    evidence_penalty = 0.1
-                    evidence_warning = f"Evidence index {idx} out of bounds (valid: 0–{log_count - 1})."
-            except (TypeError, ValueError):
-                evidence_penalty = 0.1
-                evidence_warning = f"Evidence must be an integer log index, got {evidence!r}."
-
-        adjusted_reward = round(max(0.0, reward_info["reward"] - evidence_penalty), 3)
-        ep["rewards"].append(adjusted_reward)
-        ep["cumulative_reward"] = round(sum(ep["rewards"]), 3)
-
-        if reward_info["done"]:
-            ep["done"] = True
-            ep["resolved"] = reward_info["resolved"]
-
-        feedback_parts = [
-            reward_info["safety"]["reason"],
-            reward_info["efficiency"]["reason"],
-        ]
-        if evidence_warning:
-            feedback_parts.append(evidence_warning)
-        if ep["done"]:
-            if ep["resolved"]:
-                feedback_parts.append("INCIDENT RESOLVED.")
-            else:
-                feedback_parts.append("INCIDENT NOT RESOLVED. Episode ended.")
-
-        return {
-            "task_id": ep["task_id"],
-            "task_name": task["name"],
-            "task_description": task["description"],
-            "logs": task["observation"]["logs"],
-            "chat_history": task["observation"]["chat_history"],
-            "runbook": task["observation"]["runbook"],
-            "available_actions": ACTIONS,
-            "step": ep["step_count"],
-            "max_steps": task["max_steps"],
-            "done": ep["done"],
-            "score": ep["cumulative_reward"],
-            "last_reward": adjusted_reward,
-            "reward_breakdown": {
-                "safety": reward_info["safety"],
-                "efficiency": reward_info["efficiency"],
-            },
-            "feedback": " | ".join(feedback_parts),
-            "last_action_error": None,
-        }
-
-    def get_state(self, episode_id: str) -> dict:
-        if episode_id not in self._episodes:
-            raise ValueError(f"Unknown episode_id: {episode_id}")
-        ep = self._episodes[episode_id]
-        return {
-            "episode_id": episode_id,
-            "task_id": ep["task_id"],
-            "step_count": ep["step_count"],
-            "done": ep["done"],
-            "resolved": ep["resolved"],
-            "actions_taken": ep["actions_taken"],
-            "rewards": ep["rewards"],
-            "cumulative_reward": ep["cumulative_reward"],
-        }
-
-    def grade(self, episode_id: str) -> dict:
-        """Grade an episode. Returns score in 0.0-1.0."""
-        if episode_id not in self._episodes:
-            raise ValueError(f"Unknown episode_id: {episode_id}")
-        ep = self._episodes[episode_id]
-
-        if ep["resolved"]:
-            # Perfect resolution on step 1 = 0.999, later steps lower
-            base = 0.999 if ep["step_count"] == 1 else max(0.5, 0.999 - 0.15 * (ep["step_count"] - 1))
-            return {"score": round(base, 3), "resolved": True, "steps": ep["step_count"]}
-        else:
-            # Partial credit: did the agent avoid dangerous actions?
-            task = TASKS[ep["task_id"]]
-            dangerous_taken = [a for a in ep["actions_taken"] if a in task["dangerous_actions"]]
-            if dangerous_taken:
-                return {"score": 0.001, "resolved": False, "steps": ep["step_count"]}
-            else:
-                return {"score": 0.15, "resolved": False, "steps": ep["step_count"]}
