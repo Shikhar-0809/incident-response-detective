@@ -20,6 +20,7 @@ tags:
 |---|---|
 | **HF Space (live environment)** | https://huggingface.co/spaces/optimusCryme/Incident-Response-Detective |
 | **Training notebook (Kaggle)** | https://www.kaggle.com/code/shikharkumarsanjay/notebookb5136cd284 |
+| 🔗 **Trained Model:** | [Hugging Face - Qwen GRPO Adapter](https://huggingface.co/Shiggii/qwen-incident-response-grpo) |
 | **Writeup / blog** | *Upcoming — link will be added here* |
 
 ---
@@ -145,23 +146,12 @@ Task_easy adversarial is the hardest behavioral challenge: it requires overridin
 
 ## Training Setup
 
-### `train.py` — Environment Evaluation Harness
+The repository contains two training artifacts:
 
-`train.py` is a GRPO-style evaluation loop that:
-1. Samples adversarial episodes from the environment
-2. Collects groups of 4 completions per prompt (temperature=0.8 for diversity)
-3. Computes GRPO advantage-normalized surrogate loss per group
-4. Logs reward and loss trajectories that produced the curves above
+1. **train.py** — Environment evaluation harness that tests agent performance using the Groq API (`llama-3.1-8b-instant`). Computes GRPO-style loss for analysis but does not update model weights.
+2. **Kaggle Notebook** — Full GRPO fine-tuning pipeline using Qwen 2.5-0.5B-Instruct with LoRA. The trained adapter is available at https://huggingface.co/Shiggii/qwen-incident-response-grpo
 
-This script generates the training curves using the Groq API (model: `llama-3.1-8b-instant`) and documents the reward signal structure. **Actual model fine-tuning (Qwen 0.5B with Unsloth/TRL) is in the Kaggle notebook.**
-
-### Kaggle Notebook — Actual Qwen 0.5B Fine-Tuning
-
-The Kaggle notebook:
-- Loads Qwen 0.5B with Unsloth for 4-bit quantization
-- Implements GRPO with the environment's reward function as the signal
-- Trains on adversarial episodes (the same scenarios where 70B models fail)
-- Demonstrates behavior change: before training, model follows social authority; after, it follows evidence
+The `training_log.json` and plots in this repo are from the evaluation harness (Groq API testing). The Kaggle notebook contains the production training run with actual weight updates (400 steps, 0.201 → 0.999 reward improvement on adversarial easy mode).
 
 Run the evaluation harness:
 
