@@ -1,0 +1,20 @@
+{
+  "config": {
+    "model": "llama-3.1-8b-instant",
+    "steps": 384,
+    "group_size": 4,
+    "adversarial_only": true
+  },
+  "before": {
+    "task_easy": 0.2006,
+    "task_medium": 0.999,
+    "task_hard": 0.999
+  },
+  "after": {
+    "task_easy": 0.999,
+    "task_medium": 0.999,
+    "task_hard": 0.999
+  },
+  "final_avg_reward": 0.9405,
+  "final_avg_loss": -0.5824
+}
