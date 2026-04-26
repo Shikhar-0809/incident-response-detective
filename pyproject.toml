@@ -5,8 +5,10 @@ description = "OpenEnv RL environment for incident triage with conflicting signa
 requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.115.0",
-    "uvicorn>=0.30.0",
-    "pydantic>=2.9.0",
-    "requests>=2.32.0",
-    "openai>=1.51.0",
+    "uvicorn>=0.35.0",
+    "pydantic>=2.11.7",
+    "requests==2.32.3",
+    "openai>=2.7.2",
+    "matplotlib==3.9.0",
+    "openenv-core==0.2.3",
 ]
