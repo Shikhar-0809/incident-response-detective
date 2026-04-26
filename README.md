@@ -100,12 +100,12 @@ When two confident on-call engineers endorse the wrong remediation with technica
 
 | | |
 |---|---|
-| **Model** | Qwen 2.5-0.5B-Instruct + LoRA (GRPO, 400 steps, Kaggle T4 x2) |
+| **Model** | Qwen 2.5-0.5B-Instruct + LoRA (GRPO, 384 steps, Kaggle T4 x2) |
 | **Task** | `task_easy` — adversarial split |
 | **Before training** | 0.201 |
 | **After training** | **0.999** (+0.798) |
 
-400 optimizer steps of GRPO on a 0.5B model closes the gap that 70× more parameters alone cannot. The trained adapter ([Shiggii/qwen-incident-response-grpo](https://huggingface.co/Shiggii/qwen-incident-response-grpo)) consistently resists the same social-authority attack that defeats the 70B model zero-shot. Scale alone does not fix the bias; targeted reward training does.
+384 optimizer steps of GRPO on a 0.5B model closes the gap that 70× more parameters alone cannot. The trained adapter ([Shiggii/qwen-incident-response-grpo](https://huggingface.co/Shiggii/qwen-incident-response-grpo)) consistently resists the same social-authority attack that defeats the 70B model zero-shot. Scale alone does not fix the bias; targeted reward training does.
 
 ---
 
