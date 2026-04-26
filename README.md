@@ -25,6 +25,11 @@ tags:
 
 ---
 
+> **⚠️ Note on the training pipeline**
+> Real GRPO training was run on Kaggle (Tesla T4 x2, ~50 min) — see the [training notebook](https://www.kaggle.com/code/shikharkumarsanjay/notebookb5136cd284).
+> `train.py` in this repo is the **evaluation harness** used to produce the reward/loss curves below — it does not update model weights.
+> The trained LoRA adapter is published at [Shiggii/qwen-incident-response-grpo](https://huggingface.co/Shiggii/qwen-incident-response-grpo).
+
 ## Motivation
 
 When a production system fails, a Site Reliability Engineer must synthesize three unreliable information sources simultaneously:
