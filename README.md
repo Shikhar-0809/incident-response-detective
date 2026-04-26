@@ -21,7 +21,7 @@ tags:
 | **HF Space (live environment)** | https://huggingface.co/spaces/optimusCryme/Incident-Response-Detective |
 | **Training notebook (Kaggle)** | https://www.kaggle.com/code/shikharkumarsanjay/notebookb5136cd284 |
 | 🔗 **Trained Model:** | [Hugging Face - Qwen GRPO Adapter](https://huggingface.co/Shiggii/qwen-incident-response-grpo) |
-| **Writeup / blog** | *Upcoming — link will be added here* |
+| **Writeup / blog** | 📖 [Read the full writeup](WRITEUP.md) — Teaching AI to resist social engineering in SRE operations |
 
 ---
 
