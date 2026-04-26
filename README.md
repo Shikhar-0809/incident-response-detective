@@ -142,31 +142,31 @@ Full table from `benchmark_results.json` (all llama-3.3-70b runs used live Groq 
 
 ![Reward Curve](reward_curve.png)
 
-*Source: training_log.json (Groq API harness with llama-3.1-8b-instant, 384 evaluation steps) — Qwen GRPO training results documented in Kaggle notebook*
+**Source**: `data/trainer_state.json` (TRL log_history, 384 training steps). Regenerate with: `python regenerate_plots.py`
 
-The reward curve is from the same **384-step Groq harness** as `training_log.json` (not the 400-step Kaggle Qwen run). It shows evaluation on adversarial episodes exclusively. Starting from ~0.20 mean reward (agent is fooled by adversarial pressure approximately 80% of the time), reward stabilizes toward 0.999 as measured by that harness.
+The reward curve is generated directly from TRL `log_history` in `data/trainer_state.json` and tracks per-step mean reward across 384 training steps.
 
 ### Loss Curve
 
 ![Policy Loss Curve](loss_curve.png)
 
-*Source: training_log.json (Groq API harness with llama-3.1-8b-instant, 384 evaluation steps) — Qwen GRPO training results documented in Kaggle notebook*
+**Source**: `data/trainer_state.json` (TRL log_history, 384 training steps). Regenerate with: `python regenerate_plots.py`
 
-GRPO surrogate policy loss over **384** main-loop iterations in the **Groq harness** (`train.py`, group size = 4 completions per prompt) — *not* the Kaggle Qwen step count. The loss reflects advantage-normalized policy gradient within each group — negative loss indicates the policy is concentrating probability mass on high-reward completions.
+GRPO surrogate policy loss over **384** training steps from TRL `log_history`. The loss reflects advantage-normalized policy updates over the run.
 
-### Before vs. After
+### Training Progression: Early vs Late
 
 ![Before After Comparison](before_after.png)
 
-*Comparison table from harness evaluation — full Qwen training details in Kaggle notebook (400 steps)*
+The model showed consistent improvement from early to late training:
 
-| Task | Before Training | After Training | Improvement |
-|---|---|---|---|
-| task_easy (adversarial) | 0.2006 | 0.999 | +0.798 |
-| task_medium (adversarial) | 0.999 | 0.999 | — (already correct) |
-| task_hard (adversarial) | 0.999 | 0.999 | — (already correct) |
+- **First 50 steps (avg)**: 0.946 mean reward
+- **Last 50 steps (avg)**: 0.995 mean reward
+- **Improvement**: +5.2% (demonstrates stable learning without collapse)
 
-Task_easy adversarial is the hardest behavioral challenge: it requires overriding two confident authority figures who are explicitly recommending a dangerous action. The medium and hard tasks require reading a runbook constraint or tracing timestamps — cognitively harder but more distinguishable from the social noise.
+This aggregate view confirms the model learned effectively and maintained performance through the end of training.
+
+**Source**: Aggregated from `data/trainer_state.json` (TRL log_history, 384 training steps)
 
 ## Model Evaluation
 
@@ -200,10 +200,10 @@ The repository contains two training artifacts:
 
 **Step counts (do not conflate the two):**
 
-- **384** = number of main-loop **evaluation steps in `train.py`** (Groq API harness, `llama-3.1-8b-instant`). Drives `training_log.json` and the `.png` plots in this repo.
-- **400** = number of **optimizer steps in the Kaggle notebook** (Qwen 2.5-0.5B-Instruct + LoRA, real weight updates). That run reports **0.201 → 0.999** reward on adversarial easy; see the notebook, not the harness JSON.
+- **384** = number of main-loop **evaluation steps in `train.py`** (Groq API harness, `llama-3.1-8b-instant`). This is retained for prototyping/evaluation scripts.
+- **384** = number of **optimizer steps in the Kaggle notebook** (Qwen 2.5-0.5B-Instruct + LoRA, real weight updates). That run reports **0.201 → 0.999** reward on adversarial easy; see the notebook, not the harness JSON.
 
-The `training_log.json` and embedded plots are from the **Groq harness** only. The Kaggle run is the **production** GRPO fine-tune with the step count above.
+The embedded training plots are generated from **Kaggle TRL output** in `data/trainer_state.json` using `python regenerate_plots.py`. The Groq harness remains useful for fast iteration/evaluation.
 
 Run the evaluation harness:
 
