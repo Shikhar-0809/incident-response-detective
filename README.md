@@ -73,7 +73,12 @@ To make the environment's failure cascade concrete, we built a self-contained in
 
 **View it:**
 
-[`dag_demo.html`](dag_demo.html) — open in any browser, no dependencies needed.
+To run the interactive demo:
+1. **Download** [`dag_demo.html`](https://huggingface.co/spaces/Shiggii/incident-response-detective/raw/main/dag_demo.html) (right-click → Save As)
+2. **Open the downloaded file** in any browser (Chrome, Firefox, Safari)
+3. Click **'Run Cascade'** to see the failure animation, then try different remediation actions
+
+*Note: HuggingFace Spaces don't render embedded HTML, so the file needs to be opened locally.*
 
 This visualization clarifies why the environment is non-trivial: the loudest signals (red 503 errors, downstream cascades, confident chat advice) all point toward the wrong actions. The correct fix requires tracing back to a quiet INFO-level credential rotation event — exactly the reasoning pattern we want to train.
 
