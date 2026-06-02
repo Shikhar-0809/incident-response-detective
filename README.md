@@ -384,6 +384,8 @@ Used by `grade()` and reported in benchmark tables, cross-validation JSON, and `
 
 **All scores in the benchmark table below use `grade()`, not `compute_reward()`.**
 
+**Note on evidence penalty scope:** The -0.1 evidence penalty is applied within `step()` to per-step reward feedback. It does NOT affect the final episode score returned by `grade()`, which is computed solely from whether the incident was resolved, how many steps it took, and whether any dangerous actions were taken. All benchmark and evaluation scores in this document use `grade()`.
+
 ---
 
 ## Task Details
