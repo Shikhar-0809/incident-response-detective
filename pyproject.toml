@@ -12,3 +12,6 @@ dependencies = [
     "matplotlib==3.9.0",
     "openenv-core==0.2.3",
 ]
+
+[project.scripts]
+server = "server.app:main"

@@ -355,6 +355,8 @@ The grader produces a final episode score in [0.001, 0.999]. Resolved-on-first-s
 
 An additional **evidence penalty** (−0.1) applies if the agent does not cite a log index alongside its action. This incentivizes grounded reasoning over guessing.
 
+**Note on evidence penalty scope:** The -0.1 evidence penalty is applied within `step()` to per-step reward feedback. It does NOT affect the final episode score returned by `grade()`, which is computed solely from whether the incident was resolved, how many steps it took, and whether any dangerous actions were taken. All benchmark and evaluation scores in this document use `grade()`.
+
 ---
 
 ## Task Details
