@@ -6,9 +6,9 @@ Usage:
     GROQ_API_KEY=gsk_... python train.py
 
 Outputs:
-    reward_curve.png      - per-step reward with smoothed moving average
-    loss_curve.png        - GRPO policy loss over training
-    before_after.png      - untrained vs trained performance by task difficulty
+    pipeline_b/reward_curve.png  - per-step reward with smoothed moving average
+    pipeline_b/loss_curve.png    - GRPO policy loss over training
+    pipeline_b/before_after.png  - untrained vs trained performance by task difficulty
     training_log.json     - raw numbers for reproducibility
 """
 
@@ -176,9 +176,9 @@ def plot_reward_curve(rewards: list[float]) -> None:
     plt.grid(True, alpha=0.3)
     plt.xlim(0, TRAINING_STEPS)
     plt.ylim(0, 1.05)
-    plt.savefig("reward_curve.png", bbox_inches="tight")
+    plt.savefig("pipeline_b/reward_curve.png", bbox_inches="tight")
     plt.close()
-    print("Saved -> reward_curve.png")
+    print("Saved -> pipeline_b/reward_curve.png")
 
 
 # ── Plot: Loss Curve ──────────────────────────────────────────────────────────
@@ -198,9 +198,9 @@ def plot_loss_curve(losses: list[float]) -> None:
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.xlim(0, TRAINING_STEPS)
-    plt.savefig("loss_curve.png", bbox_inches="tight")
+    plt.savefig("pipeline_b/loss_curve.png", bbox_inches="tight")
     plt.close()
-    print("Saved -> loss_curve.png")
+    print("Saved -> pipeline_b/loss_curve.png")
 
 
 # ── Plot: Before / After ──────────────────────────────────────────────────────
@@ -231,9 +231,9 @@ def plot_before_after(before: dict[str, float], after: dict[str, float]) -> None
     plt.ylim(0, 1.15)
     plt.legend()
     plt.grid(True, alpha=0.3, axis="y")
-    plt.savefig("before_after.png", bbox_inches="tight")
+    plt.savefig("pipeline_b/before_after.png", bbox_inches="tight")
     plt.close()
-    print("Saved -> before_after.png")
+    print("Saved -> pipeline_b/before_after.png")
 
 
 # ── Training Loop ─────────────────────────────────────────────────────────────
@@ -289,8 +289,9 @@ def main() -> None:
     # 3. Post-training evaluation
     after_scores = evaluate("after training")
 
-    # 4. Save all three plots
+    # 4. Save all three plots (Pipeline B — do not overwrite Pipeline A plots in repo root)
     print("\nSaving plots ...")
+    os.makedirs("pipeline_b", exist_ok=True)
     plot_reward_curve(rewards_log)
     plot_loss_curve(losses_log)
     plot_before_after(before_scores, after_scores)

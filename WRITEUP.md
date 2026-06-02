@@ -73,6 +73,7 @@ The clearest improvement appears on `task_easy` in adversarial mode. In this sce
 | task_medium (adversarial) | 0.999           | 0.999          | — (already strong) |
 | task_hard (adversarial)   | 0.999           | 0.999          | — (already strong) |
 
+> **Note:** Before Training values reflect the Pipeline B evaluation harness (llama-3.1-8b-instant via Groq API), not the Qwen model's initial performance.
 
 The training run also showed stable reward improvement:
 

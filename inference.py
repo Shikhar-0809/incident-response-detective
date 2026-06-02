@@ -78,29 +78,26 @@ Where:
 SYSTEM_PROMPT = """You are an expert Site Reliability Engineer (SRE) performing incident triage.
 
 You will receive an incident observation containing:
-1. **logs**: Raw system error messages with timestamps, levels, and services.
-2. **chat_history**: Slack-style messages from on-call engineers (WARNING: engineers may be panicked and suggest wrong fixes).
-3. **runbook**: Official company procedures. Runbook prohibitions MUST be obeyed — they override chat suggestions.
+1. logs: Raw system error messages with timestamps, levels, and services. Each line is prefixed with its index [N].
+2. chat_history: Slack-style messages from on-call engineers. WARNING: engineers may panic and suggest wrong fixes.
+3. runbook: Official procedures. Runbook prohibitions MUST be obeyed — they override chat suggestions.
 
-Your task: Analyze ALL three sources, identify the ROOT CAUSE (not downstream symptoms), and select the single best remediation action.
+Analyze ALL three sources. Identify the ROOT CAUSE (not downstream symptoms). Select the single best remediation action.
 
-REASONING PROCESS:
-1. Read logs chronologically. Find the FIRST error and what preceded it.
-2. Read chat — note who is an expert vs who is panicking. Be skeptical of panicked suggestions.
-3. Read the runbook — identify prohibited and prescribed actions. Runbook VETOES override everything.
-4. Select the action that fixes the root cause while following the runbook.
+Respond with ONLY this JSON object and absolutely nothing else:
+{"action": "<action_name>", "evidence": <log_index>, "reasoning": "<one sentence>"}
 
-You MUST respond with EXACTLY this JSON format and nothing else:
-{"action": "<action_name>", "reasoning": "<one paragraph explaining your chain of thought>"}
-
-Available actions: rollback_deployment, scale_infrastructure, flush_redis_cache, notify_cto, restart_api_gateway, rotate_db_credentials, enable_circuit_breaker, purge_cdn_cache"""
+Where:
+- action is exactly one of: rollback_deployment, scale_infrastructure, flush_redis_cache, notify_cto, restart_api_gateway, rotate_db_credentials, enable_circuit_breaker, purge_cdn_cache
+- evidence is the integer index [N] of the single most diagnostic log line
+- reasoning is one sentence explaining the root cause and your action choice"""
 
 
 def build_user_prompt(observation: dict) -> str:
     """Format the observation into a structured prompt for the LLM."""
     logs_str = "\n".join(
-        f"  [{l['ts']}] [{l['level']}] {l['service']}: {l['msg']}"
-        for l in observation.get("logs", [])
+        f"  [{i}] [{l['ts']}] [{l['level']}] {l['service']}: {l['msg']}"
+        for i, l in enumerate(observation.get("logs", []))
     )
     chat_str = "\n".join(
         f"  [{m['time']}] {m['user']}: {m['msg']}"
@@ -110,7 +107,7 @@ def build_user_prompt(observation: dict) -> str:
 
     return f"""== INCIDENT OBSERVATION ==
 
-SYSTEM LOGS (chronological):
+SYSTEM LOGS (each prefixed with index [N]):
 {logs_str}
 
 SLACK CHAT:
@@ -121,11 +118,11 @@ RUNBOOK:
 
 == YOUR TASK ==
 Analyze the above. Identify the root cause. Select ONE action.
-Respond with JSON only: {{"action": "...", "reasoning": "..."}}"""
+Respond with JSON only: {{"action": "...", "evidence": <log_index>, "reasoning": "one sentence"}}"""
 
 
 def call_llm(observation: dict) -> dict:
-    """Call the LLM via OpenAI-compatible client. Returns {action, reasoning}."""
+    """Call the LLM via OpenAI-compatible client. Returns {action, evidence, reasoning}."""
     from openai import OpenAI
 
     client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
@@ -152,12 +149,25 @@ def call_llm(observation: dict) -> dict:
             text = text.strip()
 
         result = json.loads(text)
+        try:
+            evidence = int(result.get("evidence", 0))
+        except (TypeError, ValueError):
+            evidence = 0
         return {
             "action": result.get("action", "notify_cto"),
+            "evidence": evidence,
             "reasoning": result.get("reasoning", ""),
         }
     except Exception:
         return deterministic_fallback(observation)
+
+
+def _first_log_index(logs: list, msg_predicate) -> int:
+    """Return index of the first log whose msg satisfies msg_predicate, else 0."""
+    for i, log in enumerate(logs):
+        if msg_predicate(log.get("msg", "")):
+            return i
+    return 0
 
 
 def deterministic_fallback(observation: dict) -> dict:
@@ -182,18 +192,56 @@ def deterministic_fallback(observation: dict) -> dict:
 
     # Decision tree
     if has_credential_rotation and (has_propagation_fail or has_sidecar_fail):
-        return {"action": "rotate_db_credentials", "reasoning": "Credential rotation + propagation failure detected. Root cause is stale credentials. Runbook prescribes rotate_db_credentials."}
+        evidence = _first_log_index(
+            logs,
+            lambda m: "propagat" in m.lower() and "fail" in m.lower(),
+        )
+        if evidence == 0 and not has_propagation_fail:
+            evidence = _first_log_index(
+                logs,
+                lambda m: "credential" in m.lower() and "rotat" in m.lower(),
+            )
+        return {
+            "action": "rotate_db_credentials",
+            "evidence": evidence,
+            "reasoning": "Credential rotation + propagation failure detected. Root cause is stale credentials. Runbook prescribes rotate_db_credentials.",
+        }
 
     if has_oom and has_crossslot and prohibit_flush:
-        return {"action": "rollback_deployment", "reasoning": "Cache OOM with CROSSSLOT errors. Runbook prohibits flushing during peak. Root cause is a bad deploy introducing hash-slot bug. Rollback is safe."}
+        return {
+            "action": "rollback_deployment",
+            "evidence": _first_log_index(logs, lambda m: "crossslot" in m.lower()),
+            "reasoning": "Cache OOM with CROSSSLOT errors. Runbook prohibits flushing during peak. Root cause is a bad deploy introducing hash-slot bug. Rollback is safe.",
+        }
 
     if has_503 and not prohibit_rollback:
-        return {"action": "rollback_deployment", "reasoning": "503 upstream errors detected. Runbook allows rollback for recent deployments."}
+        return {
+            "action": "rollback_deployment",
+            "evidence": _first_log_index(logs, lambda m: "503" in m),
+            "reasoning": "503 upstream errors detected. Runbook allows rollback for recent deployments.",
+        }
 
     if has_503 and prohibit_rollback and not prohibit_flush:
-        return {"action": "rotate_db_credentials", "reasoning": "503s present but rollback prohibited. Likely credential issue."}
+        evidence = _first_log_index(
+            logs,
+            lambda m: "password authentication failed" in m.lower(),
+        )
+        if evidence == 0:
+            evidence = _first_log_index(
+                logs,
+                lambda m: "propagat" in m.lower() and "fail" in m.lower(),
+            )
+        return {
+            "action": "rotate_db_credentials",
+            "evidence": evidence,
+            "reasoning": "503s present but rollback prohibited. Likely credential issue.",
+        }
 
-    return {"action": "notify_cto", "reasoning": "Unable to determine root cause with confidence. Escalating."}
+    return {
+        "action": "notify_cto",
+        "evidence": _first_log_index(logs, lambda m: "blackout" in m.lower() or "503" in m),
+        "reasoning": "Unable to determine root cause with confidence. Escalating.",
+    }
 
 
 # ── Groq Agent ────────────────────────────────────────────────────────────────
@@ -272,10 +320,10 @@ def run_groq_agent(task_id: str, adversarial: bool = False) -> float:
 
         except Exception:
             fb = deterministic_fallback(obs)
-            action, evidence = fb["action"], 0
+            action, evidence = fb["action"], fb.get("evidence", 0)
     else:
         fb = deterministic_fallback(obs)
-        action, evidence = fb["action"], 0
+        action, evidence = fb["action"], fb.get("evidence", 0)
 
     # Clamp to valid log index range so we don't waste the evidence penalty
     if log_count:
@@ -308,10 +356,13 @@ def run_task(env, env_mode: str, task_id: str) -> dict:
             agent_result = deterministic_fallback(observation)
 
         action_str = agent_result["action"]
-        action_dict = {"action": action_str, "reasoning": agent_result.get("reasoning", "")}
+        evidence = int(agent_result.get("evidence", 0))
+        log_count = len(observation.get("logs", []))
+        evidence = max(0, min(evidence, log_count - 1)) if log_count > 0 else 0
+        action_dict = {"action": action_str, "evidence": evidence}
 
         if env_mode == "http":
-            observation = env.step(episode_id, action_str, agent_result.get("reasoning", ""))
+            observation = env.step(episode_id, action_str, evidence)
         else:
             observation = env.step(episode_id, action_dict)
 

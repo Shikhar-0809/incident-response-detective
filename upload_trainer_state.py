@@ -5,15 +5,13 @@ Target repo : Shiggii/qwen-incident-response-grpo  (repo_type="model")
 Files       : trainer_state.json, training_args.bin (if present)
 
 Usage:
-    # Put trainer_state.json (and optionally training_args.bin) in one of:
-    #   - C:\\Users\\shikh\\Downloads\\
-    #   - C:\\Users\\shikh\\Downloads\\kaggle_output\\
-    #   - C:\\Users\\shikh\\Downloads\\kaggle_output\\checkpoint-400\\
-    #   - Repo root (same folder as this script)
-    # Then run (HF_TOKEN required — do not hardcode tokens in this file):
+    # Place trainer_state.json (and optionally training_args.bin) in the repo root
+    # or pass extra directories to search:
     HF_TOKEN=hf_... python upload_trainer_state.py
+    HF_TOKEN=hf_... python upload_trainer_state.py --search-dir ~/Downloads --search-dir ~/kaggle_output
 """
 
+import argparse
 import os
 import sys
 
@@ -25,31 +23,49 @@ except ImportError:
 
 REPO_ID   = "Shiggii/qwen-incident-response-grpo"
 REPO_TYPE = "model"
-TOKEN     = os.environ["HF_TOKEN"]
-
-# ── Search for files in likely locations ──────────────────────────────────────
-
-SEARCH_DIRS = [
-    os.path.dirname(os.path.abspath(__file__)),              # repo root
-    r"C:\Users\shikh\Downloads",
-    r"C:\Users\shikh\Downloads\kaggle_output",
-    r"C:\Users\shikh\Downloads\kaggle_output\checkpoint-400",
-    r"C:\Users\shikh\Downloads\kaggle_output\checkpoint-384",
-]
 
 TARGET_FILES = {
     "trainer_state.json": None,
     "training_args.bin":  None,
 }
 
-for fname in TARGET_FILES:
-    for d in SEARCH_DIRS:
-        candidate = os.path.join(d, fname)
-        if os.path.exists(candidate):
-            TARGET_FILES[fname] = candidate
-            break
+
+def parse_args() -> argparse.Namespace:
+    ap = argparse.ArgumentParser(description="Upload trainer_state.json to the HF model repo.")
+    ap.add_argument(
+        "--search-dir",
+        action="append",
+        default=[],
+        help="Additional directories to search for files (repeatable)",
+    )
+    return ap.parse_args()
+
+
+def build_search_dirs(extra_dirs: list[str]) -> list[str]:
+    repo_root = os.path.dirname(os.path.abspath(__file__))
+    search_dirs = [repo_root]
+    for d in extra_dirs:
+        search_dirs.append(os.path.abspath(os.path.expanduser(d)))
+    return search_dirs
+
+
+def discover_files(search_dirs: list[str]) -> dict[str, str | None]:
+    found_paths: dict[str, str | None] = {fname: None for fname in TARGET_FILES}
+    for fname in found_paths:
+        for d in search_dirs:
+            candidate = os.path.join(d, fname)
+            if os.path.exists(candidate):
+                found_paths[fname] = candidate
+                break
+    return found_paths
+
+
+args = parse_args()
+SEARCH_DIRS = build_search_dirs(args.search_dir)
+TARGET_FILES = discover_files(SEARCH_DIRS)
 
 print("=== File discovery ===")
+print(f"Search paths: {SEARCH_DIRS}")
 for fname, path in TARGET_FILES.items():
     if path:
         size_kb = os.path.getsize(path) / 1024
@@ -61,7 +77,7 @@ found = {k: v for k, v in TARGET_FILES.items() if v is not None}
 
 if not found:
     print("\nNo files found. Download them from the Kaggle notebook Output tab first.")
-    print("Expected locations: C:\\Users\\shikh\\Downloads\\ or subdirectories.")
+    print("Place files in the repo root or pass --search-dir <path> (repeatable).")
     sys.exit(1)
 
 # ── Confirm before uploading ──────────────────────────────────────────────────
@@ -75,7 +91,13 @@ if confirm != "y":
 
 # ── Upload ────────────────────────────────────────────────────────────────────
 
-api = HfApi(token=TOKEN)
+try:
+    token = os.environ["HF_TOKEN"]
+except KeyError:
+    print("HF_TOKEN environment variable is required.")
+    sys.exit(1)
+
+api = HfApi(token=token)
 
 for fname, local_path in found.items():
     size_kb = os.path.getsize(local_path) / 1024

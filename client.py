@@ -22,10 +22,10 @@ class IncidentResponseClient:
         data = resp.json()
         return data["episode_id"], data["observation"]
 
-    def step(self, episode_id: str, action: str, reasoning: str = "") -> dict:
+    def step(self, episode_id: str, action: str, evidence: int = 0) -> dict:
         resp = requests.post(f"{self.base_url}/step", json={
             "episode_id": episode_id,
-            "action": {"action": action, "reasoning": reasoning},
+            "action": {"action": action, "evidence": evidence},
         })
         resp.raise_for_status()
         return resp.json()["observation"]

@@ -5,14 +5,13 @@ import sys
 import uuid
 from typing import Any, Optional
 
-# Ensure project root (/app) is on sys.path so models and task_definitions are importable
+# Ensure project root (/app) is on sys.path so task_definitions is importable
 # regardless of how this module is loaded (as server.environment or directly).
 _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 from openenv.core import Environment
-from models import IncidentAction, IncidentObservation, IncidentState
 from task_definitions import TASKS, ACTIONS, ADVERSARIAL_OVERLAYS, compute_reward
 
 
@@ -123,12 +122,17 @@ class IncidentResponseEnvironment(Environment):
         if action_str not in ACTIONS:
             # Return error observation without consuming a step
             task = TASKS[ep["task_id"]]
+            chat_history = (
+                ADVERSARIAL_OVERLAYS[ep["task_id"]]
+                if ep["adversarial"] and ep["task_id"] in ADVERSARIAL_OVERLAYS
+                else task["observation"]["chat_history"]
+            )
             return {
                 "task_id": ep["task_id"],
                 "task_name": task["name"],
                 "task_description": task["description"],
                 "logs": task["observation"]["logs"],
-                "chat_history": task["observation"]["chat_history"],
+                "chat_history": chat_history,
                 "runbook": task["observation"]["runbook"],
                 "available_actions": ACTIONS,
                 "step": ep["step_count"],
@@ -146,6 +150,11 @@ class IncidentResponseEnvironment(Environment):
 
         reward_info = compute_reward(ep["task_id"], action_str, ep["step_count"])
         task = TASKS[ep["task_id"]]
+        chat_history = (
+            ADVERSARIAL_OVERLAYS[ep["task_id"]]
+            if ep["adversarial"] and ep["task_id"] in ADVERSARIAL_OVERLAYS
+            else task["observation"]["chat_history"]
+        )
 
         # Evidence validation
         evidence_penalty = 0.0
@@ -190,7 +199,7 @@ class IncidentResponseEnvironment(Environment):
             "task_name": task["name"],
             "task_description": task["description"],
             "logs": task["observation"]["logs"],
-            "chat_history": task["observation"]["chat_history"],
+            "chat_history": chat_history,
             "runbook": task["observation"]["runbook"],
             "available_actions": ACTIONS,
             "step": ep["step_count"],
@@ -252,3 +261,12 @@ class IncidentResponseEnvironment(Environment):
                 return {"score": 0.001, "resolved": False, "steps": ep["step_count"]}
             else:
                 return {"score": 0.15, "resolved": False, "steps": ep["step_count"]}
+
+
+if __name__ == "__main__":
+    env = IncidentResponseEnvironment()
+    eid, obs = env.reset(task_id="task_easy", adversarial=True)
+    adv_chat = obs["chat_history"]
+    obs2 = env.step({"action": "notify_cto", "evidence": 0}, episode_id=eid)
+    assert obs2["chat_history"] == adv_chat, "BUG-1 NOT FIXED: step() returned standard chat"
+    print("BUG-1 VERIFIED: adversarial chat preserved in step()")
