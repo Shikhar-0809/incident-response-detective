@@ -1,5 +1,7 @@
 """FastAPI server for Incident-Response-Detective OpenEnv environment."""
 
+import os
+
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
@@ -81,7 +83,8 @@ def grader(req: GradeRequest) -> dict:
 
 def main() -> None:
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=7860)
+    port = int(os.environ.get("PORT", 7860))
+    uvicorn.run(app, host="0.0.0.0", port=port)
 
 
 if __name__ == "__main__":
