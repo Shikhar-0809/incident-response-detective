@@ -12,7 +12,15 @@ if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 from openenv.core import Environment
-from task_definitions import TASKS, ACTIONS, ADVERSARIAL_OVERLAYS, compute_reward
+from task_definitions import (
+    TASKS,
+    ACTIONS,
+    ADVERSARIAL_OVERLAYS,
+    RUNBOOK_INJECTION_OVERLAYS,
+    compute_reward,
+)
+
+_VALID_INJECTION_MODES = frozenset({"none", "chat", "runbook", "both"})
 
 
 class IncidentResponseEnvironment(Environment):
@@ -39,6 +47,30 @@ class IncidentResponseEnvironment(Environment):
             for t in TASKS.values()
         ]
 
+    @staticmethod
+    def _resolve_injection_mode(adversarial: bool, injection_mode: str) -> str:
+        """Resolve injection_mode, preserving legacy adversarial=True → chat behavior."""
+        if adversarial and injection_mode == "none":
+            injection_mode = "chat"
+        if injection_mode not in _VALID_INJECTION_MODES:
+            raise ValueError(
+                f"Unknown injection_mode: {injection_mode!r}. "
+                f"Choose from: {sorted(_VALID_INJECTION_MODES)}"
+            )
+        return injection_mode
+
+    @staticmethod
+    def _chat_history_for(task_id: str, task: dict, adversarial: bool) -> list:
+        if adversarial and task_id in ADVERSARIAL_OVERLAYS:
+            return ADVERSARIAL_OVERLAYS[task_id]
+        return task["observation"]["chat_history"]
+
+    @staticmethod
+    def _runbook_for(task_id: str, task: dict, injection_mode: str) -> str:
+        if injection_mode in ("runbook", "both") and task_id in RUNBOOK_INJECTION_OVERLAYS:
+            return RUNBOOK_INJECTION_OVERLAYS[task_id]
+        return task["observation"]["runbook"]
+
     def reset(
         self,
         seed: Optional[int] = None,
@@ -53,21 +85,24 @@ class IncidentResponseEnvironment(Environment):
 
         Kwargs:
             task_id (str): Task to run. Defaults to "task_easy".
-            adversarial (bool): Use adversarial chat overlay. Defaults to False.
+            adversarial (bool): Legacy flag; when True and injection_mode is "none",
+                equivalent to injection_mode="chat". Defaults to False.
+            injection_mode (str): "none", "chat", "runbook", or "both". Defaults to "none".
         """
         task_id: str = kwargs.get("task_id", "task_easy")
         adversarial: bool = kwargs.get("adversarial", False)
+        injection_mode: str = kwargs.get("injection_mode", "none")
 
         if task_id not in TASKS:
             raise ValueError(f"Unknown task: {task_id}. Choose from: {list(TASKS.keys())}")
 
+        injection_mode = self._resolve_injection_mode(adversarial, injection_mode)
+        use_adversarial_chat = injection_mode in ("chat", "both")
+
         new_episode_id = str(uuid.uuid4())
         task = TASKS[task_id]
-        chat_history = (
-            ADVERSARIAL_OVERLAYS[task_id]
-            if adversarial and task_id in ADVERSARIAL_OVERLAYS
-            else task["observation"]["chat_history"]
-        )
+        chat_history = self._chat_history_for(task_id, task, use_adversarial_chat)
+        runbook = self._runbook_for(task_id, task, injection_mode)
 
         self._episodes[new_episode_id] = {
             "task_id": task_id,
@@ -77,7 +112,8 @@ class IncidentResponseEnvironment(Environment):
             "actions_taken": [],
             "rewards": [],
             "cumulative_reward": 0.0,
-            "adversarial": adversarial,
+            "adversarial": use_adversarial_chat,
+            "injection_mode": injection_mode,
         }
 
         obs = {
@@ -86,7 +122,7 @@ class IncidentResponseEnvironment(Environment):
             "task_description": task["description"],
             "logs": task["observation"]["logs"],
             "chat_history": chat_history,
-            "runbook": task["observation"]["runbook"],
+            "runbook": runbook,
             "available_actions": ACTIONS,
             "step": 0,
             "max_steps": task["max_steps"],
@@ -96,8 +132,35 @@ class IncidentResponseEnvironment(Environment):
             "reward_breakdown": {},
             "feedback": "Episode started. Analyze the observation and choose a remediation action.",
             "last_action_error": None,
+            "injection_mode": injection_mode,
         }
         return new_episode_id, obs
+
+    def _observation_for_episode(self, ep: dict, task: dict, **extra: Any) -> dict:
+        """Build a full observation dict for the current episode state."""
+        injection_mode = ep["injection_mode"]
+        chat_history = self._chat_history_for(ep["task_id"], task, ep["adversarial"])
+        runbook = self._runbook_for(ep["task_id"], task, injection_mode)
+        base = {
+            "task_id": ep["task_id"],
+            "task_name": task["name"],
+            "task_description": task["description"],
+            "logs": task["observation"]["logs"],
+            "chat_history": chat_history,
+            "runbook": runbook,
+            "available_actions": ACTIONS,
+            "step": ep["step_count"],
+            "max_steps": task["max_steps"],
+            "done": ep["done"],
+            "cumulative_reward": ep["cumulative_reward"],
+            "last_reward": 0.0,
+            "reward_breakdown": {},
+            "feedback": "",
+            "last_action_error": None,
+            "injection_mode": injection_mode,
+        }
+        base.update(extra)
+        return base
 
     def step(
         self,
@@ -124,41 +187,20 @@ class IncidentResponseEnvironment(Environment):
 
         action_str = action_dict.get("action", "")
         if action_str not in ACTIONS:
-            # Return error observation without consuming a step
             task = TASKS[ep["task_id"]]
-            chat_history = (
-                ADVERSARIAL_OVERLAYS[ep["task_id"]]
-                if ep["adversarial"] and ep["task_id"] in ADVERSARIAL_OVERLAYS
-                else task["observation"]["chat_history"]
+            return self._observation_for_episode(
+                ep,
+                task,
+                done=False,
+                feedback=f"Invalid action: {action_str}",
+                last_action_error=f"Invalid action '{action_str}'. Choose from: {ACTIONS}",
             )
-            return {
-                "task_id": ep["task_id"],
-                "task_name": task["name"],
-                "task_description": task["description"],
-                "logs": task["observation"]["logs"],
-                "chat_history": chat_history,
-                "runbook": task["observation"]["runbook"],
-                "available_actions": ACTIONS,
-                "step": ep["step_count"],
-                "max_steps": task["max_steps"],
-                "done": False,
-                "cumulative_reward": ep["cumulative_reward"],
-                "last_reward": 0.0,
-                "reward_breakdown": {},
-                "feedback": f"Invalid action: {action_str}",
-                "last_action_error": f"Invalid action '{action_str}'. Choose from: {ACTIONS}",
-            }
 
         ep["step_count"] += 1
         ep["actions_taken"].append(action_str)
 
         reward_info = compute_reward(ep["task_id"], action_str, ep["step_count"])
         task = TASKS[ep["task_id"]]
-        chat_history = (
-            ADVERSARIAL_OVERLAYS[ep["task_id"]]
-            if ep["adversarial"] and ep["task_id"] in ADVERSARIAL_OVERLAYS
-            else task["observation"]["chat_history"]
-        )
 
         # Evidence validation
         evidence_penalty = 0.0
@@ -198,26 +240,16 @@ class IncidentResponseEnvironment(Environment):
             else:
                 feedback_parts.append("INCIDENT NOT RESOLVED. Episode ended.")
 
-        return {
-            "task_id": ep["task_id"],
-            "task_name": task["name"],
-            "task_description": task["description"],
-            "logs": task["observation"]["logs"],
-            "chat_history": chat_history,
-            "runbook": task["observation"]["runbook"],
-            "available_actions": ACTIONS,
-            "step": ep["step_count"],
-            "max_steps": task["max_steps"],
-            "done": ep["done"],
-            "cumulative_reward": ep["cumulative_reward"],
-            "last_reward": adjusted_reward,
-            "reward_breakdown": {
+        return self._observation_for_episode(
+            ep,
+            task,
+            last_reward=adjusted_reward,
+            reward_breakdown={
                 "safety": reward_info["safety"],
                 "efficiency": reward_info["efficiency"],
             },
-            "feedback": " | ".join(feedback_parts),
-            "last_action_error": None,
-        }
+            feedback=" | ".join(feedback_parts),
+        )
 
     @property
     def state(self) -> dict:

@@ -2,6 +2,8 @@
 
 import os
 
+from typing import Optional
+
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
@@ -21,6 +23,7 @@ env = IncidentResponseEnvironment()
 class ResetRequest(BaseModel):
     task_id: str = "task_easy"
     adversarial: bool = False
+    injection_mode: Optional[str] = "none"
 
 class StepRequest(BaseModel):
     episode_id: str
@@ -50,7 +53,11 @@ def get_tasks() -> dict:
 @app.post("/reset")
 def reset(req: ResetRequest) -> dict:
     try:
-        episode_id, observation = env.reset(task_id=req.task_id, adversarial=req.adversarial)
+        episode_id, observation = env.reset(
+            task_id=req.task_id,
+            adversarial=req.adversarial,
+            injection_mode=req.injection_mode or "none",
+        )
         return {"episode_id": episode_id, "observation": observation}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

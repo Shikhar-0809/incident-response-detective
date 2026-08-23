@@ -69,11 +69,14 @@ Used for: benchmark scores, evaluation, all reported numbers in README.
 
 ## Adversarial state tracking
 
-- `adversarial` flag is stored in the episode dict during `reset()`
+- `adversarial` flag is stored in the episode dict during `reset()` (legacy; equivalent to `injection_mode="chat"`)
+- `injection_mode` (`none`, `chat`, `runbook`, `both`) selects which overlay surfaces are active
 - `step()` MUST use `ep["adversarial"]` to return correct `chat_history`
+- `step()` MUST use `ep["injection_mode"]` to return the correct `runbook` (via `RUNBOOK_INJECTION_OVERLAYS`)
 - `grade()` is adversarial-agnostic (scores are action-based only)
-- Adversarial overlays are defined in `ADVERSARIAL_OVERLAYS` dict in `task_definitions.py`
-- Only chat_history changes between standard and adversarial — logs and runbook are identical
+- Chat overlays: `ADVERSARIAL_OVERLAYS` in `task_definitions.py`
+- Runbook injection overlays: `RUNBOOK_INJECTION_OVERLAYS` in `task_definitions.py` (sibling to chat overlays)
+- Only chat_history and/or runbook change between modes — logs are identical
 
 ## Environment compatibility
 
@@ -89,7 +92,7 @@ The root `environment.py` shim handles translation between both.
 | | Pipeline A | Pipeline B |
 |---|---|---|
 | **What** | Real GRPO training | Evaluation harness |
-| **Model** | Qwen 2.5-0.5B-Instruct + LoRA | llama-3.1-8b-instant via Groq |
+| **Model** | Qwen 2.5-0.5B-Instruct + LoRA | `openai/gpt-oss-20b` via Groq |
 | **Updates weights?** | Yes | No |
 | **Run where** | Kaggle (T4 x2) | Local / any machine |
 | **Output data** | `data/trainer_state.json` | `training_log.json` |

@@ -35,7 +35,7 @@ from inference import build_groq_prompt, GROQ_SYSTEM_PROMPT, deterministic_fallb
 # ── Config ────────────────────────────────────────────────────────────────────
 
 GROQ_API_URL  = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_MODEL    = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
+GROQ_MODEL    = os.environ.get("GROQ_MODEL", "openai/gpt-oss-20b")
 GROQ_API_KEY  = os.environ.get("GROQ_API_KEY", "")
 
 TASK_IDS       = list(TASKS.keys())   # [task_easy, task_medium, task_hard]

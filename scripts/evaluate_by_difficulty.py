@@ -9,7 +9,7 @@ on ``IncidentResponseEnvironment`` from ``server.environment``, by difficulty, *
   - **Hard**   — ``task_hard``  + ``adversarial=True``  (command pressure to rollback; true fix is ``rotate_db_credentials``)
 
 **Reference plot numbers** (e.g. Untrained 0.201 / 0.999 / 0.999) match ``training_log.json`` **before** row and were obtained with
-the **Groq** harness and ``llama-3.1-8b-instant``, not local Qwen. This script is the *reproducible local Qwen* protocol: means will not
+the **Groq** harness and ``openai/gpt-oss-20b``, not local Qwen. This script is the *reproducible local Qwen* protocol: means will not
 identically match every decimal, but the qualitative pattern (train improves Easy; Medium/Hard often near ceiling) should hold.
 
 **Dependencies** (not in the minimal app ``requirements.txt``)::

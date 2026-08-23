@@ -23,6 +23,8 @@ Optional:
 import os
 import sys
 import json
+import threading
+import time
 from typing import Any, Callable
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -60,7 +62,26 @@ def get_env() -> tuple[Any, str]:
 # ── LLM Agent ─────────────────────────────────────────────────────────────────
 
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_MODEL = "llama-3.3-70b-versatile"
+# Groq deprecated llama-3.3-70b-versatile / llama-3.1-8b-instant on 2026-08-16.
+# See https://console.groq.com/docs/deprecations
+GROQ_MODEL_70B = "openai/gpt-oss-120b"
+GROQ_MODEL_8B = "openai/gpt-oss-20b"
+GROQ_MODEL = GROQ_MODEL_70B  # backward-compat default for run_groq_agent()
+
+# Groq free tier lists 30 RPM for gpt-oss models, but sustained benchmark sweeps
+# hit 429s at 2.0s spacing; 4.0s (~15 RPM) is conservative for multi-cell runs.
+# See https://console.groq.com/docs/rate-limits
+GROQ_FREE_TIER_RPM = 30
+GROQ_REQUEST_INTERVAL_SEC = 4.0
+GROQ_429_MAX_RETRIES = 4
+GROQ_429_INITIAL_BACKOFF_SEC = 2.0
+GROQ_MAX_TOKENS = 512  # was 256; truncation caused mid-string JSONDecodeError
+# Both gpt-oss models support json_object on Groq (see structured-outputs docs).
+GROQ_JSON_MODE_MODELS = frozenset({GROQ_MODEL_70B, GROQ_MODEL_8B})
+
+_groq_last_request_at = 0.0
+_groq_request_lock = threading.Lock()
+_groq_debug_failure_logged = False
 
 GROQ_SYSTEM_PROMPT = """You are an expert Site Reliability Engineer (SRE) performing incident triage.
 
@@ -230,6 +251,197 @@ def deterministic_fallback(observation: dict) -> dict:
 
 # ── Groq Agent ────────────────────────────────────────────────────────────────
 
+def _groq_rate_limit_pause() -> None:
+    """Enforce minimum spacing between Groq API calls (30 RPM free tier)."""
+    global _groq_last_request_at
+    with _groq_request_lock:
+        now = time.monotonic()
+        if _groq_last_request_at > 0:
+            wait = GROQ_REQUEST_INTERVAL_SEC - (now - _groq_last_request_at)
+            if wait > 0:
+                time.sleep(wait)
+        _groq_last_request_at = time.monotonic()
+
+
+def _groq_429_backoff_seconds(response: Any, attempt: int) -> float:
+    """Seconds to wait after a 429; honors Retry-After when present."""
+    retry_after = response.headers.get("Retry-After")
+    if retry_after is not None:
+        try:
+            return max(float(retry_after), GROQ_REQUEST_INTERVAL_SEC)
+        except ValueError:
+            pass
+    return GROQ_429_INITIAL_BACKOFF_SEC * (2 ** attempt)
+
+
+def _log_groq_failure_once(kind: str, groq_model: str, raw: str) -> None:
+    """Print full raw Groq response once per process for 429 or JSONDecodeError."""
+    global _groq_debug_failure_logged
+    if _groq_debug_failure_logged:
+        return
+    _groq_debug_failure_logged = True
+    print(
+        f"DEBUG Groq {kind} for {groq_model} — full raw response:\n{raw}",
+        file=sys.stderr,
+    )
+
+
+def _groq_error_message(response: Any) -> str:
+    """Extract Groq error.message from an HTTP error response body."""
+    try:
+        body = response.json()
+    except ValueError:
+        return response.text
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict) and error.get("message"):
+            return str(error["message"])
+        if body.get("message"):
+            return str(body["message"])
+    return response.text
+
+
+def build_groq_payload(groq_model: str, user_prompt: str) -> dict[str, Any]:
+    """Build the Groq chat/completions JSON body for incident triage."""
+    payload: dict[str, Any] = {
+        "model": groq_model,
+        "messages": [
+            {"role": "system", "content": GROQ_SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0,
+        "max_tokens": GROQ_MAX_TOKENS,
+    }
+    if groq_model in GROQ_JSON_MODE_MODELS:
+        # GPT-OSS are reasoning models; JSON mode + default include_reasoning can
+        # conflict on some prompts (Groq reasoning docs). Keep output compact.
+        payload["response_format"] = {"type": "json_object"}
+        payload["include_reasoning"] = False
+        payload["reasoning_effort"] = "low"
+    return payload
+
+
+def _log_groq_400(payload: dict[str, Any], groq_model: str, response: Any) -> None:
+    """Print full request payload and Groq's 400 error details for diagnosis."""
+    err_msg = _groq_error_message(response)
+    print(
+        f"ERROR: Groq 400 Bad Request for {groq_model}\n"
+        f"Groq error.message: {err_msg}\n"
+        f"Full response body:\n{response.text}\n"
+        f"Full request payload:\n{json.dumps(payload, indent=2)}",
+        file=sys.stderr,
+    )
+
+
+def _extract_json_text(raw: str) -> str:
+    """Strip optional markdown fences; return candidate JSON string."""
+    text = raw.strip()
+    if "```" not in text:
+        return text
+    for block in text.split("```")[1::2]:
+        candidate = block.strip()
+        if candidate.startswith("json"):
+            candidate = candidate[4:].strip()
+        if candidate:
+            return candidate
+    return text
+
+
+def _parse_groq_message_content(
+    groq_model: str,
+    response_body: dict[str, Any],
+) -> dict[str, Any]:
+    """Parse model message content as JSON; log once on decode failure."""
+    choice = response_body["choices"][0]
+    raw_content = choice["message"]["content"]
+    finish_reason = choice.get("finish_reason")
+    if finish_reason == "length":
+        print(
+            f"WARNING: Groq response truncated (finish_reason=length) for {groq_model}",
+            file=sys.stderr,
+        )
+
+    if raw_content is None:
+        _log_groq_failure_once(
+            "JSONDecodeError (empty content)",
+            groq_model,
+            json.dumps(response_body, indent=2),
+        )
+        raise json.JSONDecodeError("Groq returned empty message content", "", 0)
+
+    text = _extract_json_text(raw_content.strip())
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        _log_groq_failure_once(
+            "JSONDecodeError",
+            groq_model,
+            (
+                f"--- message.content ---\n{raw_content}\n"
+                f"--- after fence strip ---\n{text}\n"
+                f"--- full API body ---\n{json.dumps(response_body, indent=2)}"
+            ),
+        )
+        raise
+
+
+def _groq_chat_completion(
+    groq_key: str,
+    groq_model: str,
+    user_prompt: str,
+) -> dict[str, Any]:
+    """Call Groq chat/completions with rate limiting and 429 retries.
+
+    Returns parsed JSON dict with action/evidence/reasoning keys.
+
+    Raises:
+        requests.HTTPError: Non-429 HTTP error (caller should fall back).
+        (json.JSONDecodeError, KeyError, IndexError, TypeError): Parse errors.
+    """
+    import requests as _requests
+
+    payload = build_groq_payload(groq_model, user_prompt)
+    headers = {
+        "Authorization": f"Bearer {groq_key}",
+        "Content-Type": "application/json",
+    }
+
+    last_429_response: Any | None = None
+    for attempt in range(GROQ_429_MAX_RETRIES + 1):
+        _groq_rate_limit_pause()
+        resp = _requests.post(
+            GROQ_API_URL,
+            headers=headers,
+            json=payload,
+            timeout=30,
+        )
+        if resp.status_code == 429:
+            last_429_response = resp
+            _log_groq_failure_once("429", groq_model, resp.text)
+            if attempt < GROQ_429_MAX_RETRIES:
+                backoff = _groq_429_backoff_seconds(resp, attempt)
+                print(
+                    f"WARNING: Groq rate limit (429) for {groq_model} — "
+                    f"retry {attempt + 1}/{GROQ_429_MAX_RETRIES} in {backoff:.1f}s",
+                    file=sys.stderr,
+                )
+                time.sleep(backoff)
+                continue
+            break
+        if resp.status_code == 400:
+            _log_groq_400(payload, groq_model, resp)
+            resp.raise_for_status()
+        resp.raise_for_status()
+        return _parse_groq_message_content(groq_model, resp.json())
+
+    if last_429_response is not None:
+        raise _requests.HTTPError(
+            f"429 Too Many Requests after {GROQ_429_MAX_RETRIES} retries",
+            response=last_429_response,
+        )
+    raise RuntimeError("Groq request failed without a response")
+
+
 def build_groq_prompt(observation: dict) -> str:
     """Format observation with indexed log lines so the model can cite evidence by index."""
     logs_str = "\n".join(
@@ -249,76 +461,79 @@ def build_groq_prompt(observation: dict) -> str:
     )
 
 
-def run_groq_agent(task_id: str, adversarial: bool = False) -> float:
-    """Call Groq API for one episode. Returns grade score (0.0–1.0).
+def run_groq_agent(
+    task_id: str,
+    adversarial: bool = False,
+    injection_mode: str | None = None,
+    model: str | None = None,
+) -> tuple[float, bool]:
+    """Call Groq API for one episode.
+
+    Returns:
+        (grade score 0.0–1.0, used_fallback) where used_fallback is True when
+        deterministic_fallback ran instead of a successful Groq API response.
 
     Falls back to deterministic_fallback if GROQ_API_KEY is not set or the
-    API call fails.
+    API call fails (after 429 retries are exhausted).
+
+    Args:
+        model: Groq model id (default: GROQ_MODEL_70B / openai/gpt-oss-120b).
+               User prompt is built from the live observation, including injected
+               runbook text when injection_mode is set.
     """
-    import requests as _requests
     # Uses root environment.py (compatibility shim) intentionally —
     # this function uses the legacy step(episode_id, action_dict) signature.
     # Do NOT switch this import to server.environment directly.
     from environment import IncidentResponseEnvironment
 
     groq_key = os.environ.get("GROQ_API_KEY", "")
+    groq_model = model or GROQ_MODEL_70B
 
     env = IncidentResponseEnvironment()
-    episode_id, obs = env.reset(task_id=task_id, adversarial=adversarial)
+    if injection_mode is not None:
+        episode_id, obs = env.reset(task_id=task_id, injection_mode=injection_mode)
+    else:
+        episode_id, obs = env.reset(task_id=task_id, adversarial=adversarial)
     log_count = len(obs.get("logs", []))
 
     action, evidence = "notify_cto", 0
+    user_prompt = build_groq_prompt(obs)
+    used_fallback = False
 
     if groq_key:
         try:
-            resp = _requests.post(
-                GROQ_API_URL,
-                headers={
-                    "Authorization": f"Bearer {groq_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": GROQ_MODEL,
-                    "messages": [
-                        {"role": "system", "content": GROQ_SYSTEM_PROMPT},
-                        {"role": "user",   "content": build_groq_prompt(obs)},
-                    ],
-                    "temperature": 0,
-                    "max_tokens": 256,
-                },
-                timeout=30,
-            )
-            resp.raise_for_status()
-            text = resp.json()["choices"][0]["message"]["content"].strip()
-
-            # Strip markdown code fences if the model wraps its output
-            if "```" in text:
-                text = text.split("```")[1]
-                if text.startswith("json"):
-                    text = text[4:]
-                text = text.strip()
-
-            parsed = json.loads(text)
+            parsed = _groq_chat_completion(groq_key, groq_model, user_prompt)
             action = parsed.get("action", "notify_cto")
             try:
                 evidence = int(parsed.get("evidence", 0))
             except (TypeError, ValueError):
                 evidence = 0
-
         except Exception as exc:  # noqa: BLE001
-            print(f"[warn] eval failed ({type(exc).__name__}: {exc}); using deterministic fallback", file=sys.stderr)
+            print(
+                f"WARNING: Groq API call failed for {groq_model} "
+                f"({type(exc).__name__}: {exc}) — using deterministic_fallback(), "
+                f"NOT calling {groq_model}.",
+                file=sys.stderr,
+            )
             fb = deterministic_fallback(obs)
             action, evidence = fb["action"], fb.get("evidence", 0)
+            used_fallback = True
     else:
+        print(
+            f"WARNING: GROQ_API_KEY not set — using deterministic_fallback(), "
+            f"NOT calling {groq_model}.",
+            file=sys.stderr,
+        )
         fb = deterministic_fallback(obs)
         action, evidence = fb["action"], fb.get("evidence", 0)
+        used_fallback = True
 
     # Clamp to valid log index range so we don't waste the evidence penalty
     if log_count:
         evidence = max(0, min(evidence, log_count - 1))
 
     env.step(episode_id, {"action": action, "evidence": evidence})
-    return env.grade(episode_id)["score"]
+    return env.grade(episode_id)["score"], used_fallback
 
 
 # ── Main Runner ───────────────────────────────────────────────────────────────

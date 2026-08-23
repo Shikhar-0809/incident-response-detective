@@ -21,7 +21,7 @@ OpenEnv-compliant RL environment for training agents to triage production incide
 - Plots in repo root MUST come from Pipeline A (regenerate_plots.py). eval_harness.py must NOT overwrite them.
 - Two pipelines exist and must never be conflated:
   - **Pipeline A** — Real GRPO training of Qwen 2.5-0.5B on Kaggle. Produces `data/trainer_state.json` and the HF adapter.
-  - **Pipeline B** — Groq API evaluation harness using llama-3.1-8b-instant. Produces `training_log.json`. No weight updates.
+  - **Pipeline B** — Groq API evaluation harness using `openai/gpt-oss-20b`. Produces `training_log.json`. No weight updates.
 
 ## Commands
 - `uvicorn server.app:app --host 0.0.0.0 --port 7860` — run server

@@ -69,7 +69,7 @@ The environment is **OpenEnv-compliant** (`openenv-core`), exposing `reset → s
                   ▼                             ▼
            ┌──────────────┐            ┌──────────────────┐
            │ External LLM │            │ Groq API         │
-           │ (OpenAI/HF)  │            │ llama-3.1/3.3    │
+           │ (OpenAI/HF)  │            │ gpt-oss-20b/120b │
            └──────────────┘            └──────────────────┘
 
   TRAINING (Pipeline A — separate, on Kaggle):
@@ -224,7 +224,7 @@ Used by benchmarks, `/grader` endpoint, and all reported evaluation scores. Rang
    → trainer_state.json (384 steps logged)
 
 6. EVALUATION
-   benchmark.py: oracle / naive / llama-3.3-70b across 3 tasks × 2 modes
+   benchmark.py: oracle / naive / openai/gpt-oss-120b / openai/gpt-oss-20b across 3 tasks × 3 modes
    scripts/evaluate_by_difficulty.py: local Qwen base vs. LoRA adapter
 ```
 
@@ -233,7 +233,7 @@ Used by benchmarks, `/grader` endpoint, and all reported evaluation scores. Rang
 | | Pipeline A | Pipeline B |
 |---|-----------|-----------|
 | **What** | Real GRPO weight updates | Evaluation harness only |
-| **Model** | Qwen 2.5-0.5B-Instruct + LoRA | llama-3.1-8b-instant via Groq |
+| **Model** | Qwen 2.5-0.5B-Instruct + LoRA | `openai/gpt-oss-20b` via Groq |
 | **Where** | Kaggle (T4 ×2) | Local / any machine |
 | **Script** | Kaggle notebook | `eval_harness.py` |
 | **Output** | `data/trainer_state.json`, HF adapter | `training_log.json`, `pipeline_b/*.png` |
@@ -249,8 +249,8 @@ Used by benchmarks, `/grader` endpoint, and all reported evaluation scores. Rang
 |-------|------|
 | **Qwen/Qwen2.5-0.5B-Instruct** | Base model for GRPO fine-tuning (Pipeline A) |
 | **Shiggii/qwen-incident-response-grpo** | LoRA/QLoRA adapter produced by Pipeline A |
-| **llama-3.1-8b-instant** (Groq) | Pipeline B evaluation harness (`eval_harness.py`) |
-| **llama-3.3-70b-versatile** (Groq) | Benchmark cross-validation (`benchmark.py`, `inference.py`) |
+| **`openai/gpt-oss-20b`** (Groq) | Pipeline B evaluation harness (`eval_harness.py`) |
+| **`openai/gpt-oss-120b`** (Groq) | Benchmark cross-validation — large model (`benchmark.py`, `inference.py`) |
 | **gpt-4o-mini** (default) | `inference.py` default when using OpenAI-compatible API |
 
 ### Fine-tuning method
@@ -331,15 +331,15 @@ pool = build_task_pool(n_per_archetype=50, seed=0)  # 150 scenarios
 | `task_hard` standard | Picks `rollback_deployment` (most-mentioned; wrong root cause) | **0.001** |
 | `task_hard` adversarial | Picks `rollback_deployment` (command pressure) | **0.001** |
 
-**Pipeline B (llama-3.1-8b-instant) pre-training on easy adversarial:** **0.201** average — strong authority bias (follows misleading chat over runbook).
+**Pipeline B (`openai/gpt-oss-20b` today; `llama-3.1-8b-instant` in historical `training_log.json`) pre-run on easy adversarial:** **0.201** average — strong authority bias (follows misleading chat over runbook).
 
 **After GRPO (Qwen 0.5B + LoRA):** **0.999** on easy adversarial. Qwen's own step-1 reward on easy adversarial was **0.769** (not 0.201 — different model).
 
-**Important nuance:** `llama-3.3-70b` zero-shot scores **0.999 across all conditions** in `benchmark_results.json` — it cross-references logs and runbook rather than deferring to chat. Authority bias primarily affects smaller models and chat-following heuristics, not large capable models with strong instruction-following.
+**Important nuance:** The large Groq benchmark model (`openai/gpt-oss-120b` today; `llama-3.3-70b-versatile` in the Aug 2026 `benchmark_results.json` snapshot) zero-shot scored **0.999 across all conditions** — it cross-references logs and runbook rather than deferring to chat. Authority bias primarily affects smaller models and chat-following heuristics, not large capable models with strong instruction-following.
 
 **Implications:**
 - Chat-following agents are unsafe for automated incident response
-- Scale alone does not eliminate the bias (0.5B + targeted GRPO can match 70B on this narrow task)
+- Scale alone does not eliminate the bias (0.5B + targeted GRPO can match a capable large Groq model on this narrow task)
 - Environments with controlled adversarial overlays enable **clean ablation** of social vs. evidence signals
 - Runbook-grounded reward shaping can train resistance into small models cheaply
 
@@ -355,15 +355,17 @@ pool = build_task_pool(n_per_archetype=50, seed=0)  # 150 scenarios
 - `task_hard`: downstream 503s and Redis OOM are red herrings; root cause is buried INFO log
 - Naive chat-matching fails on hard; log-frequency agents would fail on medium
 
-**Cross-validation (`benchmark_results.json`, 5 runs each):**
+**Cross-validation (`benchmark_results.json`, 5 runs each — historical snapshot used deprecated Llama Groq models):**
 
 | Task | Mode | Model | Avg Score |
 |------|------|-------|-----------|
-| All tasks | standard | oracle / llama-3.3-70b | 0.999 |
-| All tasks | adversarial | oracle / llama-3.3-70b | 0.999 |
+| All tasks | standard | oracle / `llama-3.3-70b-versatile`* | 0.999 |
+| All tasks | adversarial | oracle / `llama-3.3-70b-versatile`* | 0.999 |
 | easy | adversarial | naive(→scale_infrastructure) | 0.001 |
 | medium | adversarial | naive(→flush_redis_cache) | 0.001 |
 | hard | standard/adversarial | naive(→rollback_deployment) | 0.001 |
+
+\*Current `benchmark.py` uses `openai/gpt-oss-120b` / `openai/gpt-oss-20b` — re-run to refresh.
 
 ---
 
@@ -381,7 +383,7 @@ incident-response-detective/
 ├── procedural_generator.py # Deterministic infinite scenario generation (not yet in training loop)
 ├── inference.py            # LLM agent + deterministic fallback + Groq benchmark helper
 ├── client.py               # HTTP client for remote environment
-├── benchmark.py            # Cross-validation: oracle / naive / llama-3.3-70b
+├── benchmark.py            # Cross-validation: oracle / naive / openai/gpt-oss-120b / openai/gpt-oss-20b
 ├── eval_harness.py           # Pipeline B: Groq eval harness (does NOT update weights)
 ├── regenerate_plots.py     # Regenerate Pipeline A plots from trainer_state.json
 ├── app.py                  # Root FastAPI entrypoint (used by benchmark.py subprocess)
@@ -395,7 +397,7 @@ incident-response-detective/
 │   ├── evaluate_by_difficulty.py  # Local Qwen base vs. LoRA evaluation
 │   └── download_training_data.py  # Download trainer_state.json from HF
 ├── benchmark_results.json  # Saved cross-validation results
-├── training_log.json       # Pipeline B results (Groq llama-3.1-8b)
+├── training_log.json       # Pipeline B results (Groq; may record historical llama-3.1-8b-instant)
 ├── dag_demo.html           # Interactive service-dependency visualization (task_hard)
 ├── reward_curve.png        # Pipeline A training plot
 ├── loss_curve.png          # Pipeline A training plot
@@ -414,7 +416,7 @@ incident-response-detective/
 | `uvicorn server.app:app --host 0.0.0.0 --port 7860` | Run environment server |
 | `python inference.py` | Run agent (deterministic fallback, no API key needed) |
 | `ADVERSARIAL=true python inference.py` | Agent in adversarial mode |
-| `python benchmark.py` | Full cross-validation (oracle, naive, llama-3.3-70b) |
+| `python benchmark.py` | Full cross-validation (oracle, naive, openai/gpt-oss-120b, openai/gpt-oss-20b) |
 | `GROQ_API_KEY=... python eval_harness.py` | Pipeline B eval harness |
 | `python eval_harness.py --dry-run` | Validate environment setup |
 | `python regenerate_plots.py` | Regenerate Pipeline A plots |

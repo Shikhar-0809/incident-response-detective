@@ -154,7 +154,9 @@ Source: `python scripts/evaluate_by_difficulty.py` — mean **`grade()` evaluati
 
 
 
-### Table B — Groq Model Sampling (`llama-3.1-8b-instant`): Pre-run vs Post-run
+### Table B — Groq Model Sampling (`openai/gpt-oss-20b`): Pre-run vs Post-run
+
+> Historical `training_log.json` used deprecated `llama-3.1-8b-instant`.
 
 
 
