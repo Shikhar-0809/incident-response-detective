@@ -1,7 +1,6 @@
 """Client for the Incident-Response-Detective OpenEnv environment."""
 
 import requests
-from typing import Optional
 
 
 class IncidentResponseClient:
@@ -16,8 +15,8 @@ class IncidentResponseClient:
     def get_tasks(self) -> list[dict]:
         return requests.get(f"{self.base_url}/tasks").json()["tasks"]
 
-    def reset(self, task_id: str = "task_easy") -> tuple[str, dict]:
-        resp = requests.post(f"{self.base_url}/reset", json={"task_id": task_id})
+    def reset(self, task_id: str = "task_easy", adversarial: bool = False) -> tuple[str, dict]:
+        resp = requests.post(f"{self.base_url}/reset", json={"task_id": task_id, "adversarial": adversarial})
         resp.raise_for_status()
         data = resp.json()
         return data["episode_id"], data["observation"]

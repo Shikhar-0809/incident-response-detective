@@ -1,15 +1,19 @@
 """
 Procedural scenario generator for Incident-Response-Detective.
 
+EXPERIMENTAL — not currently wired into any runtime path. Only exercised by this
+file's own ``__main__`` smoke test. See README "Procedural Generation" for planned
+integration.
+
 Preserves the three causal archetypes from task_definitions.py:
   - EASY  : obvious fix, chat aligned with logs+runbook  (optimal: rollback_deployment)
   - MEDIUM: conflicting signals, runbook constrains the safe answer (optimal: rollback_deployment)
   - HARD  : cascading blackout, root cause buried in logs, chat misleading (optimal: rotate_db_credentials)
 
-Each call to generate_task(archetype, seed=...) returns a TASKS-shaped dict that drops
-straight into TASKS[...] at runtime. ADVERSARIAL_OVERLAYS are also generated per-archetype.
+Each call to generate_task(archetype, seed=...) returns a TASKS-shaped dict suitable
+for dropping into TASKS[...] at runtime. ADVERSARIAL_OVERLAYS are also generated
+per-archetype. Planned integration (not yet implemented):
 
-Usage in environment.py:
     from procedural_generator import generate_task, generate_overlay
     task = generate_task("easy", seed=42)
     TASKS[task["id"]] = task
@@ -22,7 +26,6 @@ Or to mass-produce a training set:
 """
 
 import random
-from copy import deepcopy
 from typing import Optional
 
 
@@ -47,7 +50,7 @@ VERSIONS = [(2, mn, p) for mn in (7, 8, 9) for p in (0, 1, 2, 3)]   # 2.7.0 .. 2
 
 # -------- helpers --------
 
-def _ts(rng: random.Random, hour_low=0, hour_high=23) -> str:
+def _ts(rng: random.Random, hour_low: int = 0, hour_high: int = 23) -> str:
     """Random ISO timestamp on 2026-04-08."""
     h = rng.randint(hour_low, hour_high)
     m = rng.randint(0, 59)
@@ -129,7 +132,7 @@ def _gen_easy(seed: int) -> dict:
         "max_steps": 3,
         "observation": {"logs": logs, "chat_history": chat, "runbook": runbook},
         "optimal_actions": ["rollback_deployment"],
-        "acceptable_actions": ["rollback_deployment"],
+        "acceptable_actions": [],
         "dangerous_actions": ["scale_infrastructure"],
         "_meta": {"archetype": "easy", "seed": seed,
                   "base_hour": base_h, "base_min": base_m,
@@ -137,7 +140,7 @@ def _gen_easy(seed: int) -> dict:
     }
 
 
-def _overlay_easy(task: dict, seed: int) -> list:
+def _overlay_easy(task: dict, seed: int) -> list[dict]:
     """Adversarial: confident push toward scale_infrastructure (the dangerous action)."""
     rng = random.Random(seed + 7919)
     base_h = task["_meta"]["base_hour"]; base_m = task["_meta"]["base_min"]
@@ -229,7 +232,7 @@ def _gen_medium(seed: int) -> dict:
     }
 
 
-def _overlay_medium(task: dict, seed: int) -> list:
+def _overlay_medium(task: dict, seed: int) -> list[dict]:
     """Adversarial: remove the dissenting voice, manufacture unanimous flush_redis_cache push."""
     rng = random.Random(seed + 5039)
     base_h = task["_meta"]["base_hour"]; base_m = task["_meta"]["base_min"]
@@ -270,7 +273,8 @@ def _gen_hard(seed: int) -> dict:
     if rotate_m >= 60:
         rotate_h += 1; rotate_m -= 60
 
-    base_ts = lambda h, m, s: f"2026-04-08T{h:02d}:{m:02d}:{s:02d}Z"
+    def base_ts(h: int, m: int, s: int) -> str:
+        return f"2026-04-08T{h:02d}:{m:02d}:{s:02d}Z"
 
     user_vikram = rng.choice(USERS_ONCALL)
     user_chen   = rng.choice(USERS_SRE)
@@ -384,7 +388,7 @@ def _gen_hard(seed: int) -> dict:
         "max_steps": 3,
         "observation": {"logs": logs, "chat_history": chat, "runbook": runbook},
         "optimal_actions": ["rotate_db_credentials"],
-        "acceptable_actions": ["rotate_db_credentials"],
+        "acceptable_actions": [],
         "dangerous_actions": ["rollback_deployment", "scale_infrastructure", "flush_redis_cache"],
         "_meta": {"archetype": "hard", "seed": seed,
                   "deploy_hour": deploy_h, "rotate_min": rotate_m,
@@ -393,7 +397,7 @@ def _gen_hard(seed: int) -> dict:
     }
 
 
-def _overlay_hard(task: dict, seed: int) -> list:
+def _overlay_hard(task: dict, seed: int) -> list[dict]:
     """Adversarial: remove sara_dba (the only correct voice), make vikram dictatorial about rollback."""
     rng = random.Random(seed + 8011)
     deploy_h = task["_meta"]["deploy_hour"]; rotate_m = task["_meta"]["rotate_min"]
@@ -438,7 +442,7 @@ def generate_task(archetype: str, seed: Optional[int] = None) -> dict:
     return _GEN[archetype](seed)
 
 
-def generate_overlay(archetype: str, task: dict, seed: Optional[int] = None) -> list:
+def generate_overlay(archetype: str, task: dict, seed: Optional[int] = None) -> list[dict]:
     """Generate adversarial chat overlay for a task produced by generate_task."""
     if archetype not in _OVR:
         raise ValueError(f"archetype must be one of {list(_OVR)}, got {archetype!r}")
@@ -447,7 +451,7 @@ def generate_overlay(archetype: str, task: dict, seed: Optional[int] = None) -> 
     return _OVR[archetype](task, seed)
 
 
-def build_task_pool(n_per_archetype: int = 50, seed: int = 0) -> dict:
+def build_task_pool(n_per_archetype: int = 50, seed: int = 0) -> dict[str, list[dict]]:
     """Build a balanced pool of procedural tasks. Returns {archetype: [task, ...]}."""
     pool = {"easy": [], "medium": [], "hard": []}
     for arche in ("easy", "medium", "hard"):

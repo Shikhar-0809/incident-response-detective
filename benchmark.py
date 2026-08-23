@@ -4,18 +4,13 @@ import collections
 import json
 import math
 import os
-import subprocess
 import sys
-import time
-
-import requests
+from datetime import date
 
 from environment import IncidentResponseEnvironment
 from task_definitions import ACTIONS, ADVERSARIAL_OVERLAYS, TASKS
 from inference import run_groq_agent
 
-SERVER_PORT = 7860
-SERVER_URL = f"http://localhost:{SERVER_PORT}"
 RUNS = 5
 
 CORRECT_ACTION = {
@@ -23,28 +18,6 @@ CORRECT_ACTION = {
     "task_medium": "rollback_deployment",
     "task_hard":   "rotate_db_credentials",
 }
-
-
-def start_server() -> subprocess.Popen:
-    app_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.py")
-    return subprocess.Popen(
-        [sys.executable, app_path],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-
-
-def wait_for_health(timeout: int = 30) -> None:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            if requests.get(f"{SERVER_URL}/health", timeout=2).status_code == 200:
-                print(f"  Server healthy at {SERVER_URL}")
-                return
-        except requests.exceptions.ConnectionError:
-            pass
-        time.sleep(0.5)
-    raise RuntimeError(f"Server did not become healthy within {timeout}s")
 
 
 def naive_action_for(task_id: str, adversarial: bool) -> str:
@@ -75,7 +48,7 @@ def run_once(
     return env.grade(episode_id)["score"]
 
 
-def collect(env, task_id, adversarial, action):
+def collect(env: IncidentResponseEnvironment, task_id: str, adversarial: bool, action: str) -> list[float]:
     return [run_once(env, task_id, adversarial, action) for _ in range(RUNS)]
 
 
@@ -98,58 +71,74 @@ def render_table(rows: list[dict]) -> None:
 
 def main() -> None:
     groq_available = bool(os.environ.get("GROQ_API_KEY", ""))
-    print("Starting server...")
-    proc = start_server()
-    try:
-        wait_for_health()
-        if groq_available:
-            print("  GROQ_API_KEY found — llama-3.3-70b will run live")
-        else:
-            print("  GROQ_API_KEY not set — llama-3.3-70b will use deterministic fallback")
+    if groq_available:
+        print("GROQ_API_KEY found — llama-3.3-70b will run live")
+        groq_model_label = "llama-3.3-70b"
+    else:
+        print(
+            "WARNING: GROQ_API_KEY not set — using deterministic_fallback(), "
+            "NOT calling llama-3.3-70b.",
+            file=sys.stderr,
+        )
+        groq_model_label = "deterministic_fallback (not llama-3.3-70b)"
 
-        env = IncidentResponseEnvironment()
-        rows: list[dict] = []
+    env = IncidentResponseEnvironment()
+    rows: list[dict] = []
 
-        for task_id in TASKS:
-            for adversarial in (False, True):
-                mode = "adversarial" if adversarial else "standard"
+    for task_id in TASKS:
+        for adversarial in (False, True):
+            mode = "adversarial" if adversarial else "standard"
 
-                # Oracle: always the known-correct action
-                oracle_scores = collect(env, task_id, adversarial, CORRECT_ACTION[task_id])
-                avg, std = stats(oracle_scores)
-                rows.append({
-                    "task": task_id, "mode": mode, "model": "oracle",
-                    "avg_score": avg, "std_dev": std,
-                })
+            # Oracle: always the known-correct action
+            oracle_scores = collect(env, task_id, adversarial, CORRECT_ACTION[task_id])
+            avg, std = stats(oracle_scores)
+            rows.append({
+                "task": task_id, "mode": mode, "model": "oracle",
+                "avg_score": avg, "std_dev": std,
+            })
 
-                # Naive baseline: pick action most mentioned in chat
-                naive = naive_action_for(task_id, adversarial)
-                naive_scores = collect(env, task_id, adversarial, naive)
-                avg_n, std_n = stats(naive_scores)
-                rows.append({
-                    "task": task_id, "mode": mode, "model": f"naive({naive})",
-                    "avg_score": avg_n, "std_dev": std_n,
-                })
+            # Naive baseline: pick action most mentioned in chat
+            naive = naive_action_for(task_id, adversarial)
+            naive_scores = collect(env, task_id, adversarial, naive)
+            avg_n, std_n = stats(naive_scores)
+            rows.append({
+                "task": task_id, "mode": mode, "model": f"naive({naive})",
+                "avg_score": avg_n, "std_dev": std_n,
+            })
 
-                # Groq LLM agent
-                groq_scores = [run_groq_agent(task_id, adversarial) for _ in range(RUNS)]
-                avg_g, std_g = stats(groq_scores)
-                rows.append({
-                    "task": task_id, "mode": mode, "model": "llama-3.3-70b",
-                    "avg_score": avg_g, "std_dev": std_g,
-                })
+            # Groq LLM agent
+            groq_scores = [run_groq_agent(task_id, adversarial) for _ in range(RUNS)]
+            avg_g, std_g = stats(groq_scores)
+            rows.append({
+                "task": task_id, "mode": mode, "model": groq_model_label,
+                "avg_score": avg_g, "std_dev": std_g,
+            })
 
-        print("\n## Benchmark Results\n")
-        render_table(rows)
+    print("\n## Benchmark Results\n")
+    render_table(rows)
 
-        with open("benchmark_results.json", "w") as f:
-            json.dump(rows, f, indent=2)
-        print("\nSaved -> benchmark_results.json")
-
-    finally:
-        proc.terminate()
-        proc.wait()
-        print("Server stopped.")
+    with open("benchmark_results.json", "w") as f:
+        json.dump(
+            {
+                "metadata": {
+                    "generated_at": date.today().isoformat(),
+                    "command": "python benchmark.py",
+                    "live_api": groq_available,
+                    "groq_model": "llama-3.3-70b-versatile" if groq_available else None,
+                    "results_model_label": groq_model_label,
+                    "runs_per_cell": RUNS,
+                    "notes": (
+                        "Verified live GROQ_API_KEY run (not deterministic_fallback)."
+                        if groq_available
+                        else "GROQ_API_KEY not set — LLM row used deterministic_fallback."
+                    ),
+                },
+                "results": rows,
+            },
+            f,
+            indent=2,
+        )
+    print("\nSaved -> benchmark_results.json")
 
 
 if __name__ == "__main__":

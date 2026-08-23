@@ -1,9 +1,11 @@
-﻿**/__pycache__/
+﻿__pycache__/
+**/__pycache__/
 
 # Python
 *.pyc
 *.pyo
 *.egg-info/
+dist/
 .pytest_cache/
 
 # Environment
@@ -20,9 +22,14 @@ venv/
 
 # Project-specific
 graphify-out/
+.graphify_python
 data/raw/
-full_dump.txt
 pipeline_b/
+
+# Debug dumps
+full_dump*.txt
+full_dump.txt
+full_dump_v*.txt
 
 # macOS
 .DS_Store

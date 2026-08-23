@@ -1,8 +1,9 @@
 """
 Incident-Response-Detective: Inference Script
 ===============================================
-Uses the OpenAI-compatible client to call an LLM that performs Chain-of-Thought
-reasoning over incident observations (logs, chat, runbook) and selects actions.
+Uses the OpenAI-compatible client to call an LLM that performs structured JSON
+action selection with a single-step rationale field over incident observations
+(logs, chat, runbook) and selects actions.
 
 Emits structured [START]/[STEP]/[END] logs per hackathon requirements.
 
@@ -16,11 +17,13 @@ Optional:
   TASK_IDS      — Comma-separated subset (default: task_easy,task_medium,task_hard)
   MAX_AGENT_STEPS — Max steps per task (default: 3)
   BENCHMARK_NAME  — Label for [START] line (default: incident-response-detective)
+  ADVERSARIAL     — Run adversarial chat overlay (default: false)
 """
 
 import os
 import sys
 import json
+from typing import Any, Callable
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -32,6 +35,7 @@ TASK_IDS = os.environ.get("TASK_IDS", "task_easy,task_medium,task_hard").split("
 MAX_AGENT_STEPS = int(os.environ.get("MAX_AGENT_STEPS", "3"))
 BENCHMARK_NAME = os.environ.get("BENCHMARK_NAME", "incident-response-detective")
 SUCCESS_SCORE_THRESHOLD = float(os.environ.get("SUCCESS_SCORE_THRESHOLD", "0.5"))
+ADVERSARIAL = os.environ.get("ADVERSARIAL", "false").lower() == "true"
 
 # ── Ensure project root importable ────────────────────────────────────────────
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -39,7 +43,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # ── Environment Access ────────────────────────────────────────────────────────
 
-def get_env():
+def get_env() -> tuple[Any, str]:
     """Return either an HTTP client or an embedded environment.
 
     Embedded mode uses the root-level environment (step(episode_id, action_dict) signature).
@@ -59,23 +63,6 @@ GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
 GROQ_SYSTEM_PROMPT = """You are an expert Site Reliability Engineer (SRE) performing incident triage.
-
-You will receive an incident observation containing:
-1. logs: Raw system error messages with timestamps, levels, and services. Each line is prefixed with its index [N].
-2. chat_history: Slack-style messages from on-call engineers. WARNING: engineers may panic and suggest wrong fixes.
-3. runbook: Official procedures. Runbook prohibitions MUST be obeyed — they override chat suggestions.
-
-Analyze ALL three sources. Identify the ROOT CAUSE (not downstream symptoms). Select the single best remediation action.
-
-Respond with ONLY this JSON object and absolutely nothing else:
-{"action": "<action_name>", "evidence": <log_index>, "reasoning": "<one sentence>"}
-
-Where:
-- action is exactly one of: rollback_deployment, scale_infrastructure, flush_redis_cache, notify_cto, restart_api_gateway, rotate_db_credentials, enable_circuit_breaker, purge_cdn_cache
-- evidence is the integer index [N] of the single most diagnostic log line
-- reasoning is one sentence explaining the root cause and your action choice"""
-
-SYSTEM_PROMPT = """You are an expert Site Reliability Engineer (SRE) performing incident triage.
 
 You will receive an incident observation containing:
 1. logs: Raw system error messages with timestamps, levels, and services. Each line is prefixed with its index [N].
@@ -133,7 +120,7 @@ def call_llm(observation: dict) -> dict:
         response = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": GROQ_SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0.0,
@@ -158,11 +145,12 @@ def call_llm(observation: dict) -> dict:
             "evidence": evidence,
             "reasoning": result.get("reasoning", ""),
         }
-    except Exception:
+    except Exception as exc:  # noqa: BLE001
+        print(f"[warn] call_llm failed ({type(exc).__name__}: {exc}); using deterministic fallback", file=sys.stderr)
         return deterministic_fallback(observation)
 
 
-def _first_log_index(logs: list, msg_predicate) -> int:
+def _first_log_index(logs: list, msg_predicate: Callable[[str], bool]) -> int:
     """Return index of the first log whose msg satisfies msg_predicate, else 0."""
     for i, log in enumerate(logs):
         if msg_predicate(log.get("msg", "")):
@@ -171,7 +159,7 @@ def _first_log_index(logs: list, msg_predicate) -> int:
 
 
 def deterministic_fallback(observation: dict) -> dict:
-    """Rule-based fallback when LLM is unavailable. Implements CoT heuristics."""
+    """Rule-based fallback when LLM is unavailable. Fixed if/else heuristics over log patterns."""
     logs = observation.get("logs", [])
     runbook = observation.get("runbook", "")
 
@@ -182,14 +170,10 @@ def deterministic_fallback(observation: dict) -> dict:
     has_oom = any("oom" in l.get("msg", "").lower() or "maxmemory" in l.get("msg", "").lower() for l in logs)
     has_crossslot = any("crossslot" in l.get("msg", "").lower() for l in logs)
     has_503 = any("503" in l.get("msg", "") for l in logs)
-    has_deploy_success = any("completed successfully" in l.get("msg", "").lower() and "deploy" in l.get("msg", "").lower() for l in logs)
-
     # Runbook prohibitions
     runbook_lower = runbook.lower()
     prohibit_rollback = "do not" in runbook_lower and "rollback" in runbook_lower
     prohibit_flush = "do not" in runbook_lower and "flush" in runbook_lower
-    prohibit_scale = "do not" in runbook_lower and "scale" in runbook_lower
-
     # Decision tree
     if has_credential_rotation and (has_propagation_fail or has_sidecar_fail):
         evidence = _first_log_index(
@@ -272,6 +256,9 @@ def run_groq_agent(task_id: str, adversarial: bool = False) -> float:
     API call fails.
     """
     import requests as _requests
+    # Uses root environment.py (compatibility shim) intentionally —
+    # this function uses the legacy step(episode_id, action_dict) signature.
+    # Do NOT switch this import to server.environment directly.
     from environment import IncidentResponseEnvironment
 
     groq_key = os.environ.get("GROQ_API_KEY", "")
@@ -318,7 +305,8 @@ def run_groq_agent(task_id: str, adversarial: bool = False) -> float:
             except (TypeError, ValueError):
                 evidence = 0
 
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            print(f"[warn] eval failed ({type(exc).__name__}: {exc}); using deterministic fallback", file=sys.stderr)
             fb = deterministic_fallback(obs)
             action, evidence = fb["action"], fb.get("evidence", 0)
     else:
@@ -335,15 +323,16 @@ def run_groq_agent(task_id: str, adversarial: bool = False) -> float:
 
 # ── Main Runner ───────────────────────────────────────────────────────────────
 
-def run_task(env, env_mode: str, task_id: str) -> dict:
+def run_task(env: Any, env_mode: str, task_id: str) -> dict:
     """Run a single task. Returns {success, steps, score, rewards}."""
 
-    print(f"[START] task={task_id} env={BENCHMARK_NAME} model={MODEL_NAME}")
+    agent_model = MODEL_NAME if HF_TOKEN else "deterministic_fallback"
+    print(f"[START] task={task_id} env={BENCHMARK_NAME} model={agent_model} adversarial={ADVERSARIAL}")
 
-    episode_id, observation = env.reset(task_id=task_id)
+    episode_id, observation = env.reset(task_id=task_id, adversarial=ADVERSARIAL)
 
     rewards = []
-    last_score = 0.0
+    last_cumulative_reward = 0.0
 
     for step_num in range(1, MAX_AGENT_STEPS + 1):
         if observation.get("done", False):
@@ -361,6 +350,11 @@ def run_task(env, env_mode: str, task_id: str) -> dict:
         evidence = max(0, min(evidence, log_count - 1)) if log_count > 0 else 0
         action_dict = {"action": action_str, "evidence": evidence}
 
+        # HTTP mode: IncidentResponseClient.step(episode_id, action, evidence)
+        #   wraps args into {"action": action, "evidence": evidence} internally.
+        # Embedded mode: root environment shim expects step(episode_id, action_dict)
+        #   where action_dict = {"action": ..., "evidence": ...}.
+        # Behavior is equivalent; signatures differ by design.
         if env_mode == "http":
             observation = env.step(episode_id, action_str, evidence)
         else:
@@ -368,10 +362,10 @@ def run_task(env, env_mode: str, task_id: str) -> dict:
 
         reward = observation.get("last_reward", 0.0)
         done = observation.get("done", False)
-        score = observation.get("score", 0.0)
+        cumulative_reward = observation.get("cumulative_reward", 0.0)
         error = observation.get("last_action_error", None)
         rewards.append(reward)
-        last_score = score
+        last_cumulative_reward = cumulative_reward
 
         action_json = json.dumps(action_dict)
         print(f"[STEP] step={step_num} action={action_json} reward={reward:.2f} done={str(done).lower()} error={error if error else 'null'}")
@@ -380,7 +374,7 @@ def run_task(env, env_mode: str, task_id: str) -> dict:
             break
 
     grade_result = env.grade(episode_id)
-    final_score = grade_result.get("score", last_score)
+    final_score = grade_result.get("score", last_cumulative_reward)
     success = final_score >= SUCCESS_SCORE_THRESHOLD
     total_steps = len(rewards)
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
@@ -396,7 +390,7 @@ def run_task(env, env_mode: str, task_id: str) -> dict:
     }
 
 
-def main():
+def main() -> int:
     env, env_mode = get_env()
 
     results = []

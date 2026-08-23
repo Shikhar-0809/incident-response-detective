@@ -1,15 +1,16 @@
 """
-GRPO training for Incident-Response-Detective.
-Runs adversarial-only episodes to prevent reward saturation on easy scenarios.
+Lightweight evaluation harness — samples episodes against the Groq API and computes
+surrogate metrics. Does NOT update model weights. Real GRPO training happens in the
+external Kaggle notebook (see TRAINING.md).
 
 Usage:
-    GROQ_API_KEY=gsk_... python train.py
+    GROQ_API_KEY=gsk_... python eval_harness.py
 
 Outputs:
     pipeline_b/reward_curve.png  - per-step reward with smoothed moving average
-    pipeline_b/loss_curve.png    - GRPO policy loss over training
-    pipeline_b/before_after.png  - untrained vs trained performance by task difficulty
-    training_log.json     - raw numbers for reproducibility
+    pipeline_b/loss_curve.png    - illustrative surrogate loss (not TRL GRPO loss)
+    pipeline_b/before_after.png  - pre-run baseline vs post-run resample (same model)
+    training_log.json            - raw numbers for reproducibility
 """
 
 import matplotlib
@@ -39,8 +40,8 @@ GROQ_API_KEY  = os.environ.get("GROQ_API_KEY", "")
 
 TASK_IDS       = list(TASKS.keys())   # [task_easy, task_medium, task_hard]
 TRAINING_STEPS = 384
-EVAL_RUNS      = 5                    # episodes per task in before/after eval
-GRPO_GROUP_SIZE = 4                   # completions per prompt for GRPO loss
+EVAL_RUNS      = 5                    # episodes per task in pre/post eval
+GRPO_GROUP_SIZE = 4                   # completions per prompt for surrogate loss
 
 
 # ── Episode Runner ────────────────────────────────────────────────────────────
@@ -79,36 +80,18 @@ def run_episode(env: IncidentResponseEnvironment, task_id: str, adversarial: boo
             parsed = json.loads(text)
             action   = parsed.get("action", "notify_cto")
             evidence = max(0, min(int(parsed.get("evidence", 0)), log_count - 1))
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            print(f"[warn] JSON parse failed ({type(exc).__name__}: {exc}); using deterministic fallback", file=sys.stderr)
             fb = deterministic_fallback(obs)
-            action, evidence = fb["action"], 0
+            action, evidence = fb["action"], fb.get("evidence", 0)
     else:
         fb = deterministic_fallback(obs)
-        action, evidence = fb["action"], 0
+        action, evidence = fb["action"], fb.get("evidence", 0)
 
     env.step(episode_id, {"action": action, "evidence": evidence})
     score = env.grade(episode_id)["score"]
     return {"task_id": task_id, "action": action, "score": score}
 
-
-# ── Dataset Generation ────────────────────────────────────────────────────────
-
-def generate_dataset(num_episodes: int) -> list[dict]:
-    """Collect training episodes from the environment.
-
-    # Adversarial-only training to prevent reward saturation on easy scenarios
-    """
-    env = IncidentResponseEnvironment()
-    episodes = []
-    for i in range(num_episodes):
-        task_id = TASK_IDS[i % len(TASK_IDS)]
-        # Adversarial-only training to prevent reward saturation on easy scenarios
-        result = run_episode(env, task_id, adversarial=True)
-        episodes.append(result)
-        if (i + 1) % 12 == 0:
-            recent = [e["score"] for e in episodes[-12:]]
-            print(f"  dataset {i+1}/{num_episodes}  last-12 avg={sum(recent)/len(recent):.3f}")
-    return episodes
 
 
 # ── Evaluation ────────────────────────────────────────────────────────────────
@@ -134,8 +117,11 @@ def evaluate(label: str) -> dict[str, float]:
 
 def grpo_loss(group_scores: list[float]) -> float:
     """
-    Group Relative Policy Optimization surrogate loss.
-    Computes advantage-normalized policy gradient within a completion group.
+    Illustrative surrogate loss for plotting purposes only. NOT connected to model
+    logits, KL penalty, or clip ratios. Not comparable to the real TRL GRPOTrainer
+    loss logged in data/trainer_state.json from the Kaggle training run.
+
+    Computes advantage-normalized scores within a completion group for visualization.
     """
     if len(group_scores) < 2:
         return 0.0
@@ -171,7 +157,7 @@ def plot_reward_curve(rewards: list[float]) -> None:
              label="Moving average (w=20)")
     plt.xlabel("Training Steps")
     plt.ylabel("Episode Reward")
-    plt.title("GRPO Reward Curve - Adversarial Training")
+    plt.title("Groq Sampling Reward Curve (surrogate metric, no training)")
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.xlim(0, TRAINING_STEPS)
@@ -205,6 +191,8 @@ def plot_loss_curve(losses: list[float]) -> None:
 
 # ── Plot: Before / After ──────────────────────────────────────────────────────
 
+# NOTE: both evaluations use the same frozen Groq model. Any score delta reflects
+# sampling temperature variance, not learning.
 def plot_before_after(before: dict[str, float], after: dict[str, float]) -> None:
     task_ids = ["task_easy", "task_medium", "task_hard"]
     labels   = ["Easy", "Medium", "Hard"]
@@ -215,9 +203,9 @@ def plot_before_after(before: dict[str, float], after: dict[str, float]) -> None
 
     plt.figure(figsize=(10, 6), dpi=100)
     bars_b = plt.bar([xi - w / 2 for xi in x], bvals, w,
-                     label="Before Training", color="salmon",   alpha=0.85)
+                     label="Pre-run Baseline", color="salmon",   alpha=0.85)
     bars_a = plt.bar([xi + w / 2 for xi in x], avals, w,
-                     label="After Training",  color="seagreen", alpha=0.85)
+                     label="Post-run Resample",  color="seagreen", alpha=0.85)
 
     for bar in (*bars_b, *bars_a):
         h = bar.get_height()
@@ -226,7 +214,7 @@ def plot_before_after(before: dict[str, float], after: dict[str, float]) -> None
 
     plt.xlabel("Task Difficulty")
     plt.ylabel("Average Reward (0–1)")
-    plt.title("Performance Improvement: Untrained -> Trained")
+    plt.title("Pre-run Baseline vs Post-run Resample (same frozen model)")
     plt.xticks(list(x), labels)
     plt.ylim(0, 1.15)
     plt.legend()
@@ -236,10 +224,10 @@ def plot_before_after(before: dict[str, float], after: dict[str, float]) -> None
     print("Saved -> pipeline_b/before_after.png")
 
 
-# ── Training Loop ─────────────────────────────────────────────────────────────
+# ── Sampling Loop ─────────────────────────────────────────────────────────────
 
 def main() -> None:
-    print("=== GRPO Adversarial Training ===")
+    print("=== Groq Adversarial Evaluation Harness (no weight updates) ===")
     print(f"Model  : {GROQ_MODEL}")
     print(f"Steps  : {TRAINING_STEPS}")
     print(f"Group  : {GRPO_GROUP_SIZE} completions/prompt")
@@ -257,11 +245,11 @@ def main() -> None:
         print("DRY RUN complete. Environment is functional.")
         return
 
-    # 1. Baseline evaluation BEFORE training (required for before_after.png)
-    before_scores = evaluate("before training")
+    # 1. Pre-run baseline (required for before_after.png)
+    pre_run_scores = evaluate("pre_run_baseline")
 
-    # 2. Training loop
-    print(f"\nTraining for {TRAINING_STEPS} steps ...")
+    # 2. Sampling loop (no weight updates)
+    print(f"\nSampling for {TRAINING_STEPS} steps ...")
     env = IncidentResponseEnvironment()
     rewards_log: list[float] = []
     losses_log:  list[float] = []
@@ -286,17 +274,17 @@ def main() -> None:
             print(f"  step {step+1:>4}/{TRAINING_STEPS}  "
                   f"reward={avg_r:.3f}  loss={avg_l:.4f}")
 
-    # 3. Post-training evaluation
-    after_scores = evaluate("after training")
+    # 3. Post-run resample (same frozen model)
+    post_run_scores = evaluate("post_run_resample")
 
     # 4. Save all three plots (Pipeline B — do not overwrite Pipeline A plots in repo root)
     print("\nSaving plots ...")
     os.makedirs("pipeline_b", exist_ok=True)
     plot_reward_curve(rewards_log)
     plot_loss_curve(losses_log)
-    plot_before_after(before_scores, after_scores)
+    plot_before_after(pre_run_scores, post_run_scores)
 
-    # 5. Persist training log
+    # 5. Persist evaluation log
     log = {
         "config": {
             "model":            GROQ_MODEL,
@@ -304,18 +292,18 @@ def main() -> None:
             "group_size":       GRPO_GROUP_SIZE,
             "adversarial_only": True,
         },
-        "before": before_scores,
-        "after":  after_scores,
+        "pre_run_baseline": pre_run_scores,
+        "post_run_resample": post_run_scores,
         "final_avg_reward": round(sum(rewards_log[-64:]) / min(64, len(rewards_log)), 4),
-        "final_avg_loss":   round(sum(losses_log[-64:])  / min(64, len(losses_log)),  4),
+        "final_avg_surrogate_loss": round(sum(losses_log[-64:]) / min(64, len(losses_log)), 4),
     }
     with open("training_log.json", "w") as f:
         json.dump(log, f, indent=2)
     print("Saved -> training_log.json")
 
     print("\n=== Done ===")
-    print(f"Before : {before_scores}")
-    print(f"After  : {after_scores}")
+    print(f"Pre-run baseline : {pre_run_scores}")
+    print(f"Post-run resample: {post_run_scores}")
 
 
 if __name__ == "__main__":

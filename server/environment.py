@@ -47,6 +47,10 @@ class IncidentResponseEnvironment(Environment):
     ) -> tuple[str, dict]:
         """Start a new episode. Returns (episode_id, observation_dict).
 
+        Args:
+            seed: Reserved for future use; currently ignored (reset has no RNG).
+            episode_id: Reserved for future use; a new UUID is always generated.
+
         Kwargs:
             task_id (str): Task to run. Defaults to "task_easy".
             adversarial (bool): Use adversarial chat overlay. Defaults to False.
@@ -87,7 +91,7 @@ class IncidentResponseEnvironment(Environment):
             "step": 0,
             "max_steps": task["max_steps"],
             "done": False,
-            "score": 0.0,
+            "cumulative_reward": 0.0,
             "last_reward": 0.0,
             "reward_breakdown": {},
             "feedback": "Episode started. Analyze the observation and choose a remediation action.",
@@ -138,7 +142,7 @@ class IncidentResponseEnvironment(Environment):
                 "step": ep["step_count"],
                 "max_steps": task["max_steps"],
                 "done": False,
-                "score": ep["cumulative_reward"],
+                "cumulative_reward": ep["cumulative_reward"],
                 "last_reward": 0.0,
                 "reward_breakdown": {},
                 "feedback": f"Invalid action: {action_str}",
@@ -205,7 +209,7 @@ class IncidentResponseEnvironment(Environment):
             "step": ep["step_count"],
             "max_steps": task["max_steps"],
             "done": ep["done"],
-            "score": ep["cumulative_reward"],
+            "cumulative_reward": ep["cumulative_reward"],
             "last_reward": adjusted_reward,
             "reward_breakdown": {
                 "safety": reward_info["safety"],

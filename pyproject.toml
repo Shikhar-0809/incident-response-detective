@@ -10,6 +10,7 @@ dependencies = [
     "requests==2.32.3",
     "openai>=2.7.2",
     "matplotlib==3.9.0",
+    "numpy>=1.26.0",
     "openenv-core==0.2.3",
 ]
 

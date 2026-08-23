@@ -5,16 +5,16 @@
     "group_size": 4,
     "adversarial_only": true
   },
-  "before": {
+  "pre_run_baseline": {
     "task_easy": 0.2006,
     "task_medium": 0.999,
     "task_hard": 0.999
   },
-  "after": {
+  "post_run_resample": {
     "task_easy": 0.999,
     "task_medium": 0.999,
     "task_hard": 0.999
   },
   "final_avg_reward": 0.9405,
-  "final_avg_loss": -0.5824
+  "final_avg_surrogate_loss": -0.5824
 }

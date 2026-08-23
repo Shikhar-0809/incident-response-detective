@@ -16,16 +16,18 @@ identically match every decimal, but the qualitative pattern (train improves Eas
 
     pip install torch transformers peft accelerate
 
-**Run** (GPU strongly recommended)::
+**Run** (GPU strongly recommended; default ``temperature=0`` for reproducible ``grade()`` scores)::
 
     set HF_TOKEN=hf_...   & :: if adapter is private
     python scripts/evaluate_by_difficulty.py
     python scripts/evaluate_by_difficulty.py --plot
+    python scripts/evaluate_by_difficulty.py --temperature 0.8   # stochastic; reports std dev
 """
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import random
 import sys
@@ -40,13 +42,17 @@ ADAPTER_ID = "Shiggii/qwen-incident-response-grpo"
 # Match ``training_log.json`` regime: all tasks evaluated in adversarial mode
 ADVERSARIAL = True
 EPISODES_PER_CELL = 10
-EVALTEMP = float(os.environ.get("EVAL_TEMPERATURE", "0.8"))
+DEFAULT_EVAL_TEMP = 0.0
 
 TASK_ORDER = [("task_easy", "Easy"), ("task_medium", "Medium"), ("task_hard", "Hard")]
 
 
 def import_deps():
     from inference import GROQ_SYSTEM_PROMPT, build_groq_prompt, deterministic_fallback
+    # Imports directly from server.environment (canonical OpenEnv implementation),
+    # not the root environment.py shim. This script must be run from the repo root
+    # so that the server package is on sys.path. The legacy step() signature is
+    # NOT available here — use OpenEnv signature: step(action_dict, episode_id=...).
     from server.environment import IncidentResponseEnvironment
 
     return GROQ_SYSTEM_PROMPT, build_groq_prompt, deterministic_fallback, IncidentResponseEnvironment
@@ -101,6 +107,7 @@ def run_one_episode(
     deterministic_fallback,
     task_id: str,
     seed: int,
+    eval_temp: float,
 ) -> float:
     import torch as T
     import re
@@ -143,8 +150,8 @@ def run_one_episode(
             gen = model.generate(
                 **inputs,
                 max_new_tokens=256,
-                do_sample=EVALTEMP > 0,
-                temperature=EVALTEMP if EVALTEMP > 0 else 1.0,
+                do_sample=eval_temp > 0,
+                temperature=eval_temp if eval_temp > 0 else 1.0,
                 top_p=0.95,
                 pad_token_id=tokenizer.pad_token_id,
             )
@@ -153,7 +160,7 @@ def run_one_episode(
         text = tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
     except Exception:  # noqa: BLE001
         fb = deterministic_fallback(obs)
-        return finish(fb["action"], 0)
+        return finish(fb["action"], fb.get("evidence", 0))
 
     if "```" in text:
         part = text.split("```", 1)[1]
@@ -168,7 +175,7 @@ def run_one_episode(
             file=sys.stderr,
         )
         fb = deterministic_fallback(obs)
-        return finish(fb["action"], 0)
+        return finish(fb["action"], fb.get("evidence", 0))
 
     # Robust handling for malformed-but-parseable outputs:
     # - expected: dict with {"action": "...", "evidence": N}
@@ -190,7 +197,7 @@ def run_one_episode(
         m = action_regex.search(parsed)
         if m:
             act = m.group(1)
-            ev_match = re.search(r"evidence\\s*[:=]\\s*(-?\\d+)", parsed, flags=re.IGNORECASE)
+            ev_match = re.search(r"evidence\s*[:=]\s*(-?\d+)", parsed, flags=re.IGNORECASE)
             try:
                 ev = int(ev_match.group(1)) if ev_match else 0
             except (TypeError, ValueError):
@@ -206,14 +213,14 @@ def run_one_episode(
             file=sys.stderr,
         )
         fb = deterministic_fallback(obs)
-        return finish(fb["action"], 0)
+        return finish(fb["action"], fb.get("evidence", 0))
 
     print(
         f"[warn] {task_id} seed={seed}: parsed JSON type={type(parsed).__name__}; using deterministic fallback",
         file=sys.stderr,
     )
     fb = deterministic_fallback(obs)
-    return finish(fb["action"], 0)
+    return finish(fb["action"], fb.get("evidence", 0))
 
 
 def run_grid(
@@ -227,8 +234,10 @@ def run_grid(
     episodes: int,
     base_seed: int,
     seed_offset: int,
-) -> dict[str, float]:
-    out: dict[str, float] = {}
+    eval_temp: float,
+) -> tuple[dict[str, float], dict[str, float]]:
+    means: dict[str, float] = {}
+    stds: dict[str, float] = {}
     for ti, (tid, _label) in enumerate(TASK_ORDER):
         scores: list[float] = []
         for epi in range(episodes):
@@ -244,10 +253,16 @@ def run_grid(
                 deterministic_fallback,
                 tid,
                 seed,
+                eval_temp,
             )
             scores.append(s)
-        out[tid] = sum(scores) / len(scores)
-    return out
+        avg = sum(scores) / len(scores)
+        means[tid] = avg
+        if len(scores) > 1:
+            stds[tid] = math.sqrt(sum((x - avg) ** 2 for x in scores) / len(scores))
+        else:
+            stds[tid] = 0.0
+    return means, stds
 
 
 def maybe_plot(untrained: dict[str, float], trained: dict[str, float], outpath: str) -> None:
@@ -294,7 +309,14 @@ def main() -> None:
         default=42,
         help="Base RNG seed (default: 42)",
     )
+    ap.add_argument(
+        "--temperature",
+        type=float,
+        default=float(os.environ.get("EVAL_TEMPERATURE", str(DEFAULT_EVAL_TEMP))),
+        help="Sampling temperature (default: 0.0 for reproducible greedy decoding)",
+    )
     args = ap.parse_args()
+    eval_temp = max(0.0, args.temperature)
 
     GROQ_SYSTEM_PROMPT, build_groq_prompt, det_fb, IrEnv = import_deps()
     torch, am, tok_cls, peft = import_torch()
@@ -303,17 +325,19 @@ def main() -> None:
     print("--- evaluate_by_difficulty.py ---")
     print(f"  Base: {BASE_MODEL}")
     print(f"  Adapter: {ADAPTER_ID} (trained run)")
-    print(f"  Adversarial: {ADVERSARIAL}  |  episodes/cell: {args.episodes}  |  temp: {EVALTEMP}")
-    print("  Reference (README / training_log.json before, Groq 8B): Easy ~0.20, Med/Hard ~0.999\n")
+    print(f"  Adversarial: {ADVERSARIAL}  |  episodes/cell: {args.episodes}  |  temp: {eval_temp}")
+    print("  Reference (training_log pre_run_baseline, Groq 8B): Easy ~0.20, Med/Hard ~0.999\n")
 
     results_untrained: dict[str, float] = {}
     results_trained: dict[str, float] = {}
+    std_untrained: dict[str, float] = {}
+    std_trained: dict[str, float] = {}
 
     env = IrEnv()
 
     print("[1/2] Untrained (base only)...")
     tok, model = load_model(torch, am, tok_cls, peft, False, hf_token)
-    results_untrained = run_grid(
+    results_untrained, std_untrained = run_grid(
         torch,
         model,
         tok,
@@ -324,6 +348,7 @@ def main() -> None:
         args.episodes,
         args.base_seed,
         seed_offset=0,
+        eval_temp=eval_temp,
     )
     del model
     if torch.cuda.is_available():
@@ -331,7 +356,7 @@ def main() -> None:
 
     print("[2/2] Trained (LoRA)...")
     tok, model = load_model(torch, am, tok_cls, peft, True, hf_token)
-    results_trained = run_grid(
+    results_trained, std_trained = run_grid(
         torch,
         model,
         tok,
@@ -342,21 +367,49 @@ def main() -> None:
         args.episodes,
         args.base_seed,
         seed_offset=1_000_000,
+        eval_temp=eval_temp,
     )
 
     # Print table
     print("\n=== Mean grader score (adversarial, 1 step, env.grade) ===\n")
-    print(f"{'':12} {'Easy':>10} {'Medium':>10} {'Hard':>10}")
+    if eval_temp > 0:
+        print(f"{'':12} {'Easy':>10} {'Medium':>10} {'Hard':>10}")
+        print(
+            f"{'Untrained':12} "
+            f"{results_untrained['task_easy']:10.3f} "
+            f"{results_untrained['task_medium']:10.3f} "
+            f"{results_untrained['task_hard']:10.3f}"
+        )
+        print(
+            f"{'  ± std':12} "
+            f"{std_untrained['task_easy']:10.3f} "
+            f"{std_untrained['task_medium']:10.3f} "
+            f"{std_untrained['task_hard']:10.3f}"
+        )
+        print(
+            f"{'Trained':12} "
+            f"{results_trained['task_easy']:10.3f} "
+            f"{results_trained['task_medium']:10.3f} "
+            f"{results_trained['task_hard']:10.3f}"
+        )
+        print(
+            f"{'  ± std':12} "
+            f"{std_trained['task_easy']:10.3f} "
+            f"{std_trained['task_medium']:10.3f} "
+            f"{std_trained['task_hard']:10.3f}"
+        )
+    else:
+        print(f"{'':12} {'Easy':>10} {'Medium':>10} {'Hard':>10}")
+        print(
+            f"{'Untrained':12} {results_untrained['task_easy']:10.3f} "
+            f"{results_untrained['task_medium']:10.3f} {results_untrained['task_hard']:10.3f}"
+        )
+        print(
+            f"{'Trained':12} {results_trained['task_easy']:10.3f} "
+            f"{results_trained['task_medium']:10.3f} {results_trained['task_hard']:10.3f}"
+        )
     print(
-        f"{'Untrained':12} {results_untrained['task_easy']:10.3f} "
-        f"{results_untrained['task_medium']:10.3f} {results_untrained['task_hard']:10.3f}"
-    )
-    print(
-        f"{'Trained':12} {results_trained['task_easy']:10.3f} "
-        f"{results_trained['task_medium']:10.3f} {results_trained['task_hard']:10.3f}"
-    )
-    print(
-        f"\nReference (training_log before/after, different model): "
+        f"\nReference (training_log pre_run/post_run resample, different model): "
         f"0.201 / 0.999 / 0.999  →  0.999 / 0.999 / 0.999"
     )
 

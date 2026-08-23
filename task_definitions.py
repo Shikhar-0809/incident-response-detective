@@ -39,7 +39,7 @@ TASKS = {
             ),
         },
         "optimal_actions": ["rollback_deployment"],
-        "acceptable_actions": ["rollback_deployment"],
+        "acceptable_actions": [],
         "dangerous_actions": ["scale_infrastructure"],
     },
     "task_medium": {
@@ -75,7 +75,7 @@ TASKS = {
             ),
         },
         "optimal_actions": ["rollback_deployment"],
-        "acceptable_actions": ["rollback_deployment", "scale_infrastructure"],
+        "acceptable_actions": ["scale_infrastructure"],
         "dangerous_actions": ["flush_redis_cache"],
     },
     "task_hard": {
@@ -143,7 +143,7 @@ TASKS = {
             ),
         },
         "optimal_actions": ["rotate_db_credentials"],
-        "acceptable_actions": ["rotate_db_credentials"],
+        "acceptable_actions": [],
         "dangerous_actions": ["rollback_deployment", "scale_infrastructure", "flush_redis_cache"],
     },
 }

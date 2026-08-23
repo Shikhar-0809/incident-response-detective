@@ -1,5 +1,5 @@
 """
-Compatibility wrapper for legacy scripts (train.py, benchmark.py, inference.py).
+Compatibility wrapper for legacy scripts (eval_harness.py, benchmark.py, inference.py).
 
 The canonical OpenEnv-compliant implementation lives in server/environment.py.
 This module keeps old root imports working while exposing an Environment subclass

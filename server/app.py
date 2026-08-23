@@ -1,7 +1,5 @@
 """FastAPI server for Incident-Response-Detective OpenEnv environment."""
 
-import os
-
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
@@ -33,22 +31,22 @@ class GradeRequest(BaseModel):
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @app.get("/")
-def root():
+def root() -> RedirectResponse:
     return RedirectResponse(url="/docs")
 
 
 @app.get("/health")
-def health():
+def health() -> dict:
     return {"status": "healthy", "environment": "Incident-Response-Detective"}
 
 
 @app.get("/tasks")
-def get_tasks():
+def get_tasks() -> dict:
     return {"tasks": env.get_tasks()}
 
 
 @app.post("/reset")
-def reset(req: ResetRequest):
+def reset(req: ResetRequest) -> dict:
     try:
         episode_id, observation = env.reset(task_id=req.task_id, adversarial=req.adversarial)
         return {"episode_id": episode_id, "observation": observation}
@@ -57,7 +55,7 @@ def reset(req: ResetRequest):
 
 
 @app.post("/step")
-def step(req: StepRequest):
+def step(req: StepRequest) -> dict:
     try:
         observation = env.step(req.action, episode_id=req.episode_id)
         return {"observation": observation}
@@ -66,7 +64,7 @@ def step(req: StepRequest):
 
 
 @app.get("/state")
-def state(episode_id: str):
+def state(episode_id: str) -> dict:
     try:
         return env.get_state(episode_id)
     except ValueError as e:
@@ -74,14 +72,14 @@ def state(episode_id: str):
 
 
 @app.post("/grader")
-def grader(req: GradeRequest):
+def grader(req: GradeRequest) -> dict:
     try:
         return env.grade(req.episode_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
-def main():
+def main() -> None:
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=7860)
 
