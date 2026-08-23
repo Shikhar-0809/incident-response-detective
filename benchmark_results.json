@@ -38,7 +38,7 @@
     "task": "task_easy",
     "mode": "adversarial",
     "model": "llama-3.3-70b",
-    "avg_score": 0.001,
+    "avg_score": 0.999,
     "std_dev": 0.0
   },
   {
