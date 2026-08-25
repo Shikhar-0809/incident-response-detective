@@ -59,8 +59,7 @@ Used for: benchmark scores, evaluation, all reported numbers in README.
 | `server/environment.py` | Canonical env | `task_definitions.py` | — |
 | `environment.py` | Shim for legacy scripts | `server/environment.py` | — |
 | `task_definitions.py` | Scenarios + `compute_reward` | — | — |
-| `eval_harness.py` | Pipeline B eval harness | env, Groq API | `training_log.json`, `pipeline_b/*.png` |
-| `regenerate_plots.py` | Pipeline A plot gen | `data/trainer_state.json` | `reward_curve.png`, `loss_curve.png`, `before_after.png` |
+| `eval_harness.py` | Pipeline B eval harness | env, Groq API | `training_log.json`, `pipeline_b/*.png` (local, not committed) |
 | `benchmark.py` | Cross-validation | env, Groq API | `benchmark_results.json` |
 | `inference.py` | Agent runner | env, LLM API | stdout |
 | `procedural_generator.py` | Scenario generation (experimental, not wired) | — | — |
@@ -95,6 +94,6 @@ The root `environment.py` shim handles translation between both.
 | **Model** | Qwen 2.5-0.5B-Instruct + LoRA | `openai/gpt-oss-20b` via Groq |
 | **Updates weights?** | Yes | No |
 | **Run where** | Kaggle (T4 x2) | Local / any machine |
-| **Output data** | `data/trainer_state.json` | `training_log.json` |
-| **Output plots** | `reward_curve.png` etc. (via `regenerate_plots.py`) | `pipeline_b/*.png` (via `eval_harness.py`) |
+| **Output data** | HF model repo `trainer_state.json` | `training_log.json` (local, from `eval_harness.py`) |
+| **Output plots** | Not vendored in repo (Kaggle / HF) | `pipeline_b/*.png` (local, from `eval_harness.py`) |
 | **Adapter** | `Shiggii/qwen-incident-response-grpo` | — |

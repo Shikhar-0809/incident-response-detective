@@ -36,8 +36,8 @@
 
 ## File hygiene
 
-- No generated files committed unless they are canonical outputs (e.g., `benchmark_results.json` + `benchmark_results.md`)
-- Plot PNGs in repo root come from `regenerate_plots.py` only — `eval_harness.py` saves to `pipeline_b/`
+- No generated files committed unless they are canonical outputs (e.g., `benchmark_results.json` + `benchmark_results.md`, `reasoning_trace_results.json`)
+- `eval_harness.py` writes Pipeline B plots to `pipeline_b/` (gitignored) and `training_log.json` locally — neither is committed
 - Upload/utility scripts must not contain hardcoded local paths
 - `.gitignore` should include: `pipeline_b/`, `full_dump.txt`, `.env`
 - No self-referential files (don't run dump commands that include the dump output itself)

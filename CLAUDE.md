@@ -12,16 +12,15 @@ OpenEnv-compliant RL environment for training agents to triage production incide
 - `eval_harness.py` — Pipeline B: Groq evaluation harness (does NOT train weights).
 - `benchmark.py` — cross-validation across oracle/naive/LLM baselines.
 - `procedural_generator.py` — EXPERIMENTAL infinite scenario generation (not wired into runtime)
-- `regenerate_plots.py` — generates plots from Pipeline A data (data/trainer_state.json).
 
 ## Key invariants
 - `grade()` is the ONLY scoring function that matters for final results. `compute_reward()` is per-step feedback only.
 - Adversarial mode swaps chat_history only. Logs and runbook are identical.
 - All scripts must send `evidence` (int) alongside `action` to avoid the -0.1 penalty.
-- Plots in repo root MUST come from Pipeline A (regenerate_plots.py). eval_harness.py must NOT overwrite them.
+- Pipeline B plots from `eval_harness.py` go to `pipeline_b/` only (gitignored); they must not overwrite any committed files.
 - Two pipelines exist and must never be conflated:
-  - **Pipeline A** — Real GRPO training of Qwen 2.5-0.5B on Kaggle. Produces `data/trainer_state.json` and the HF adapter.
-  - **Pipeline B** — Groq API evaluation harness using `openai/gpt-oss-20b`. Produces `training_log.json`. No weight updates.
+  - **Pipeline A** — Real GRPO training of Qwen 2.5-0.5B on Kaggle. Artifacts live on Hugging Face (`Shiggii/qwen-incident-response-grpo`).
+  - **Pipeline B** — Groq API evaluation harness using `openai/gpt-oss-20b`. Writes `training_log.json` locally when run. No weight updates.
 
 ## Commands
 - `uvicorn server.app:app --host 0.0.0.0 --port 7860` — run server
@@ -29,7 +28,6 @@ OpenEnv-compliant RL environment for training agents to triage production incide
 - `ADVERSARIAL=true python inference.py` — run deterministic baseline in adversarial mode
 - `python benchmark.py` — full cross-validation
 - `python eval_harness.py --dry-run` — validate environment setup
-- `python regenerate_plots.py` — regenerate plots from trainer_state.json
 - `openenv validate` — OpenEnv spec validation (also runs in CI; see `.github/workflows/openenv-validate.yml`)
 - `docker build -t incident-response-detective . && docker run --rm -p 7860:7860 incident-response-detective` — Docker
 

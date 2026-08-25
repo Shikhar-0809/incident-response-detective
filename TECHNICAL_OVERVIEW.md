@@ -75,7 +75,7 @@ The environment is **OpenEnv-compliant** (`openenv-core`), exposing `reset → s
   TRAINING (Pipeline A — separate, on Kaggle):
   ┌──────────────────────────────────────────────────────────┐
   │ Qwen2.5-0.5B-Instruct + LoRA/QLoRA                       │
-  │ TRL GRPOTrainer → data/trainer_state.json                │
+  │ TRL GRPOTrainer → HF model repo trainer_state.json       │
   │ Adapter → Shiggii/qwen-incident-response-grpo            │
   └──────────────────────────────────────────────────────────┘
 ```
@@ -225,7 +225,7 @@ Used by benchmarks, `/grader` endpoint, and all reported evaluation scores. Rang
 
 6. EVALUATION
    benchmark.py: oracle / naive / openai/gpt-oss-120b / openai/gpt-oss-20b across 3 tasks × 3 modes
-   scripts/evaluate_by_difficulty.py: local Qwen base vs. LoRA adapter
+   Local Qwen base vs. LoRA adapter evaluation (external; not vendored in repo)
 ```
 
 **Two pipelines (do not conflate):**
@@ -236,7 +236,7 @@ Used by benchmarks, `/grader` endpoint, and all reported evaluation scores. Rang
 | **Model** | Qwen 2.5-0.5B-Instruct + LoRA | `openai/gpt-oss-20b` via Groq |
 | **Where** | Kaggle (T4 ×2) | Local / any machine |
 | **Script** | Kaggle notebook | `eval_harness.py` |
-| **Output** | `data/trainer_state.json`, HF adapter | `training_log.json`, `pipeline_b/*.png` |
+| **Output** | HF model repo `trainer_state.json`, HF adapter | `training_log.json`, `pipeline_b/*.png` (local, from `eval_harness.py`) |
 | **Updates weights?** | Yes | No |
 
 ---
@@ -260,7 +260,7 @@ Used by benchmarks, `/grader` endpoint, and all reported evaluation scores. Rang
 - **Training framework:** HuggingFace TRL `GRPOTrainer`
 - **Prompt format:** Chat template over system prompt + indexed logs + chat + runbook; model outputs JSON action
 
-### Training hyperparameters (from `data/trainer_state.json` and README)
+### Training hyperparameters (from HF model repo `trainer_state.json` and README)
 
 | Parameter | Value |
 |-----------|-------|
@@ -404,23 +404,16 @@ incident-response-detective/
 ├── client.py               # HTTP client for remote environment
 ├── benchmark.py            # Cross-validation: oracle / naive / openai/gpt-oss-120b / openai/gpt-oss-20b
 ├── eval_harness.py           # Pipeline B: Groq eval harness (does NOT update weights)
-├── regenerate_plots.py     # Regenerate Pipeline A plots from trainer_state.json
 ├── app.py                  # Root FastAPI entrypoint (used by benchmark.py subprocess)
 ├── openenv.yaml            # OpenEnv manifest (spec_version 1, type step_reset)
 ├── Dockerfile              # Container: uvicorn server.app:app on port 7860
 ├── pyproject.toml          # Package metadata + server entry point
 ├── requirements.txt        # Runtime dependencies
-├── data/
-│   └── trainer_state.json  # Pipeline A TRL log (384 steps × ~20 metrics)
 ├── scripts/
-│   ├── evaluate_by_difficulty.py  # Local Qwen base vs. LoRA evaluation
-│   └── download_training_data.py  # Download trainer_state.json from HF
+│   └── capture_reasoning_traces.py  # Groq reasoning-trace capture
 ├── benchmark_results.json  # Saved cross-validation results
-├── training_log.json       # Pipeline B results (Groq; may record historical llama-3.1-8b-instant)
+├── reasoning_trace_results.json  # Saved Groq reasoning traces
 ├── dag_demo.html           # Interactive service-dependency visualization (task_hard)
-├── reward_curve.png        # Pipeline A training plot
-├── loss_curve.png          # Pipeline A training plot
-├── before_after.png        # Pipeline A early vs. late reward
 ├── README.md               # Primary documentation
 ├── WRITEUP.md              # Blog-style summary
 ├── ARCHITECTURE.md         # Internal architecture reference
@@ -438,8 +431,6 @@ incident-response-detective/
 | `python benchmark.py` | Full cross-validation (oracle, naive, openai/gpt-oss-120b, openai/gpt-oss-20b) |
 | `GROQ_API_KEY=... python eval_harness.py` | Pipeline B eval harness |
 | `python eval_harness.py --dry-run` | Validate environment setup |
-| `python regenerate_plots.py` | Regenerate Pipeline A plots |
-| `python scripts/evaluate_by_difficulty.py` | Local Qwen base vs. LoRA eval |
 | `openenv validate` | OpenEnv spec validation |
 | `docker build -t incident-response-detective . && docker run --rm -p 7860:7860 incident-response-detective` | Containerized deployment |
 
@@ -558,8 +549,7 @@ incident-response-detective/
 | `numpy` | ≥1.26 | Plot smoothing |
 
 **Optional (not in `requirements.txt`):**
-- `torch`, `transformers`, `peft`, `accelerate` — for `scripts/evaluate_by_difficulty.py`
-- `huggingface_hub` — for `scripts/download_training_data.py`
+- `torch`, `transformers`, `peft`, `accelerate` — optional; for local LoRA evaluation against the HF adapter (not vendored in repo)
 
 ### OpenEnv spec compliance
 
@@ -585,7 +575,7 @@ incident-response-detective/
 | Environment server | Minimal CPU; Python 3.10+ |
 | `inference.py` (deterministic) | No GPU, no API key |
 | `benchmark.py` / `eval_harness.py` | Groq API key optional |
-| `evaluate_by_difficulty.py` | GPU strongly recommended; ~0.5B model fits on consumer GPU |
+| Local LoRA eval | GPU strongly recommended; ~0.5B model fits on consumer GPU |
 | Pipeline A training | Kaggle T4 ×2, <10 GPU-hours, ~50 min for 384 steps |
 | Docker | Python 3.11-slim image, port 7860 |
 
@@ -593,7 +583,7 @@ incident-response-detective/
 
 1. **Windows:** Repo developed on Windows; paths in upload scripts were cleaned (no hardcoded `C:\Users\...`).
 2. **Two step signatures:** Legacy scripts use `environment.py` shim; server uses OpenEnv signature.
-3. **Plot separation:** Pipeline A plots in repo root (`regenerate_plots.py`); Pipeline B plots in `pipeline_b/` (`eval_harness.py`).
+3. **Plot separation:** Pipeline A artifacts live on Hugging Face / Kaggle (not vendored in repo); Pipeline B plots go to `pipeline_b/` (`eval_harness.py`, gitignored).
 4. **`dag_demo.html`:** Interactive visualization must be downloaded and opened locally (HF Spaces don't render embedded HTML).
 5. **`HF_TOKEN` naming:** Used as generic API key env var in `inference.py` despite the name.
 

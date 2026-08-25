@@ -136,7 +136,7 @@ The clearest improvement appears on `task_easy` in adversarial mode. In this sce
 
 
 
-Source: `python scripts/evaluate_by_difficulty.py` — mean **`grade()` evaluation score**, adversarial mode. Run locally to reproduce; scores are not vendored in the repo.
+Source: Local Qwen base vs. LoRA evaluation — mean **`grade()` evaluation score**, adversarial mode. Scores are not vendored in the repo; evaluate against [Shiggii/qwen-incident-response-grpo](https://huggingface.co/Shiggii/qwen-incident-response-grpo) locally.
 
 
 
@@ -154,11 +154,9 @@ Source: `python scripts/evaluate_by_difficulty.py` — mean **`grade()` evaluati
 
 ### Table B — Groq Model Sampling (`openai/gpt-oss-20b`): Pre-run vs Post-run
 
-> Historical `training_log.json` used deprecated `llama-3.1-8b-instant`.
+> Historical Table B numbers came from a committed `training_log.json` snapshot (deprecated `llama-3.1-8b-instant`).
 
-
-
-Source: `training_log.json` from `eval_harness.py`. Same frozen Groq model — **not** a training comparison.
+Source: `python eval_harness.py` (writes `training_log.json` locally). Same frozen Groq model — **not** a training comparison.
 
 
 

@@ -1,7 +1,7 @@
 """
 Lightweight evaluation harness — samples episodes against the Groq API and computes
 surrogate metrics. Does NOT update model weights. Real GRPO training happens in the
-external Kaggle notebook (see TRAINING.md).
+external Kaggle notebook (https://www.kaggle.com/code/shikharkumarsanjay/notebookb5136cd284).
 
 Usage:
     GROQ_API_KEY=gsk_... python eval_harness.py
