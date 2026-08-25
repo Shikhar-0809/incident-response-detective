@@ -5,6 +5,7 @@ Targeted reruns (merge into existing benchmark_results.json by default):
     python benchmark.py --tasks task_easy --modes adversarial --models large
     python benchmark.py --tasks task_easy,task_hard --modes runbook_injection --models small
     python benchmark.py --tasks task_medium --modes standard --models oracle,naive --no-merge
+    python benchmark.py --tasks task_easy,task_medium,task_hard --modes runbook_injection,standard --models large,small --defended
 """
 
 from __future__ import annotations
@@ -106,6 +107,7 @@ def run_groq_episodes(
     task_id: str,
     groq_kwargs: dict,
     model: str | None = None,
+    defended: bool = False,
 ) -> tuple[list[float], int, int]:
     """Run RUNS Groq episodes; return scores and fallback/real API counts."""
     scores: list[float] = []
@@ -114,6 +116,8 @@ def run_groq_episodes(
     kwargs = dict(groq_kwargs)
     if model is not None:
         kwargs["model"] = model
+    if defended:
+        kwargs["defended"] = True
     for _ in range(RUNS):
         score, used_fallback = run_groq_agent(task_id, **kwargs)
         scores.append(score)
@@ -122,6 +126,39 @@ def run_groq_episodes(
         else:
             real_call_count += 1
     return scores, fallback_count, real_call_count
+
+
+def append_groq_model_rows(
+    rows: list[dict],
+    task_id: str,
+    mode: str,
+    groq_kwargs: dict,
+    model_label: str,
+    groq_model_id: str | None,
+    compare_defended: bool,
+) -> None:
+    """Append undefended Groq row; optionally append a defended variant row."""
+    groq_scores, fb_count, real_count = run_groq_episodes(
+        task_id, groq_kwargs, model=groq_model_id
+    )
+    avg_g, std_g = stats(groq_scores)
+    rows.append({
+        "task": task_id, "mode": mode, "model": model_label,
+        "avg_score": avg_g, "std_dev": std_g,
+        "real_call_count": real_count, "fallback_count": fb_count,
+    })
+    if not compare_defended:
+        return
+    defended_label = f"{model_label} (defended)"
+    groq_scores_d, fb_d, real_d = run_groq_episodes(
+        task_id, groq_kwargs, model=groq_model_id, defended=True
+    )
+    avg_d, std_d = stats(groq_scores_d)
+    rows.append({
+        "task": task_id, "mode": mode, "model": defended_label,
+        "avg_score": avg_d, "std_dev": std_d,
+        "real_call_count": real_d, "fallback_count": fb_d,
+    })
 
 
 def is_groq_result_row(model_label: str) -> bool:
@@ -195,6 +232,7 @@ def run_benchmark_cell(
     model_kinds: set[ModelKind] | None,
     groq_model_label: str,
     groq_8b_label: str,
+    compare_defended: bool = False,
 ) -> list[dict]:
     """Run selected model variants for one (task, mode) cell."""
     rows: list[dict] = []
@@ -222,24 +260,14 @@ def run_benchmark_cell(
     groq_kwargs = groq_kwargs_for_mode(mode)
 
     if run or "large" in model_kinds:
-        groq_scores, fb_count, real_count = run_groq_episodes(task_id, groq_kwargs)
-        avg_g, std_g = stats(groq_scores)
-        rows.append({
-            "task": task_id, "mode": mode, "model": groq_model_label,
-            "avg_score": avg_g, "std_dev": std_g,
-            "real_call_count": real_count, "fallback_count": fb_count,
-        })
+        append_groq_model_rows(
+            rows, task_id, mode, groq_kwargs, groq_model_label, None, compare_defended
+        )
 
     if run or "small" in model_kinds:
-        groq_8b_scores, fb_8b, real_8b = run_groq_episodes(
-            task_id, groq_kwargs, model=GROQ_MODEL_8B
+        append_groq_model_rows(
+            rows, task_id, mode, groq_kwargs, groq_8b_label, GROQ_MODEL_8B, compare_defended
         )
-        avg_8b, std_8b = stats(groq_8b_scores)
-        rows.append({
-            "task": task_id, "mode": mode, "model": groq_8b_label,
-            "avg_score": avg_8b, "std_dev": std_8b,
-            "real_call_count": real_8b, "fallback_count": fb_8b,
-        })
 
     return rows
 
@@ -331,6 +359,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=RESULTS_PATH,
         help=f"Results JSON path (default: {RESULTS_PATH})",
     )
+    ap.add_argument(
+        "--defended",
+        action="store_true",
+        help="For each LLM model row, also run a defended system-prompt variant "
+        '(labeled e.g. "openai/gpt-oss-120b (defended)")',
+    )
     return ap.parse_args(argv)
 
 
@@ -344,6 +378,7 @@ def main(argv: list[str] | None = None) -> None:
         args.tasks is not None
         or args.modes is not None
         or args.models is not None
+        or args.defended
     )
     merge = args.merge if args.merge is not None else filtered
 
@@ -368,7 +403,11 @@ def main(argv: list[str] | None = None) -> None:
             f"tasks={task_ids}, modes={[m for m, _ in modes]}, "
             f"models={sorted(model_kinds) if model_kinds else 'all'}"
         )
+        if args.defended:
+            scope += ", defended_comparison=True"
         print(f"Targeted rerun: {scope}" + (" (merge on)" if merge else " (merge off)"))
+    elif args.defended:
+        print("Defended comparison: each LLM row runs undefended + defended variants")
 
     env = IncidentResponseEnvironment()
     new_rows: list[dict] = []
@@ -379,6 +418,7 @@ def main(argv: list[str] | None = None) -> None:
                 run_benchmark_cell(
                     env, task_id, mode, reset_kwargs, model_kinds,
                     groq_model_label, groq_8b_label,
+                    compare_defended=args.defended,
                 )
             )
 
@@ -421,6 +461,7 @@ def main(argv: list[str] | None = None) -> None:
                         "models": sorted(model_kinds) if model_kinds else None,
                     } if filtered else None,
                     "merged": merge,
+                    "defended_comparison": args.defended,
                     "groq_models": {
                         "large": GROQ_MODEL_70B,
                         "small": GROQ_MODEL_8B,
